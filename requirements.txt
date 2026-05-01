@@ -3,3 +3,5 @@ numpy>=1.21
 astroquery>=0.4
 matplotlib>=3.5
 astrodash
+PyQt5
+pandas
