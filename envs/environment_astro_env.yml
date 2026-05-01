@@ -1,0 +1,14 @@
+name: astro_env
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - matplotlib
+  - pandas
+  - scipy
+  - pip
+  - pip:
+    - "numpy<1.24"
+    - "tensorflow<2.16"
+    - astrodash

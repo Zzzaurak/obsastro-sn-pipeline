@@ -26,18 +26,42 @@ sn-pipline/
 │   └── fetch_aux_data.py      # 辅助数据获取入口（光变曲线 + 光谱）
 ├── output/                    # 输出目录（每个目标一个子目录）
 ├── data/                      # TNS 公共目录缓存
-├── requirements.txt           # Python 依赖
+├── envs/                      # Conda 环境定义文件
+│   ├── environment_tardis.yml
+│   └── environment_astro_env.yml
+├── requirements.txt           # Python 依赖（备选安装方式）
 └── .env                       # TNS 用户凭证（不上传 git）
 ```
 
 ## 环境准备
 
-### 1. Python 环境
-
-使用 `tardis` conda 环境，已预装所需依赖：
+### 一键创建环境（新电脑/其他人使用）
 
 ```bash
+# 主流水线环境（Python 3.13）
+conda env create -f envs/environment_tardis.yml
+
+# 光谱分类环境（Python 3.10，astrodash 专用）
+conda env create -f envs/environment_astro_env.yml
+```
+
+创建后每次使用只需 `conda activate tardis` 或 `conda activate astro_env`。
+
+### 环境说明
+
+本流水线需要 conda 环境，两个环境分工不同：
+
+| 环境 | Python | 用途 |
+|------|--------|------|
+| `tardis` | 3.13 | 主流水线 — TNS 查询、观测窗计算、找星图、光变曲线、光谱下载与绘图 |
+| `astro_env` | 3.10 | 光谱后处理 — [astrodash](https://github.com/daniel-murray/astrodash) 分类（该库不支持高版本 Python，且需要 `numpy<1.24`） |
+
+```bash
+# 主流水线
 conda activate tardis
+
+# 光谱分类
+conda activate astro_env
 ```
 
 如需新环境安装依赖：
@@ -46,7 +70,7 @@ conda activate tardis
 pip install -r requirements.txt
 ```
 
-所需依赖：
+所需依赖（`tardis` 环境）：
 - `astropy>=5.0` — 天文坐标与可见性计算
 - `numpy>=1.21` — 数值计算
 - `astroquery>=0.4` — 天文在线数据查询（SkyView 找星图）
@@ -125,7 +149,8 @@ output/SN2026fov/
 └── spectrum/
     ├── spectra_wiserep.csv                        # WISeREP 光谱元数据
     ├── spectra_wiserep.png                        # 光谱图
-    └── spectrum_*.ascii                           # 光谱数据文件
+    ├── spectrum_*.ascii                           # 原始光谱数据文件
+    └── spectrum_*.dat                             # 清洁 2 列数据（供 astrodash 等工具）
 ```
 
 ### 4. 获取辅助数据（光变曲线 + 光谱）

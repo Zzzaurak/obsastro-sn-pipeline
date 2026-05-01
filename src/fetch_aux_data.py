@@ -24,6 +24,7 @@ from .wiserep import (
     download_spectrum_file,
     fetch_spectra_metadata,
     plot_spectra,
+    save_clean_two_column_spectrum,
     save_spectra_csv,
 )
 
@@ -147,8 +148,9 @@ def run(config_path: str) -> int:
             save_spectra_csv(spec_rows, spec_csv_path)
             info(f"Spectra metadata CSV saved → {spec_csv_path} ({len(spec_rows)} spectra)")
 
-            # Download up to 2 spectrum files and plot
+            # Download up to 2 spectrum files, clean them, and plot
             downloaded: list[Path] = []
+            cleaned: list[Path] = []
             for srow in spec_rows[:2]:
                 ascii_url = srow.get("Ascii file", "").strip()
                 if not ascii_url:
@@ -157,6 +159,10 @@ def run(config_path: str) -> int:
                 dest = spec_dir / f"spectrum_{spec_id}.ascii"
                 if download_spectrum_file(ascii_url, dest):
                     downloaded.append(dest)
+                    # Save clean 2-column version for astrodash etc.
+                    clean_dest = spec_dir / f"spectrum_{spec_id}.dat"
+                    if save_clean_two_column_spectrum(dest, clean_dest):
+                        cleaned.append(clean_dest)
 
             if downloaded:
                 plot_spectra(downloaded, target_name, spec_png_path)

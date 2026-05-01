@@ -3,14 +3,14 @@ from __future__ import annotations
 import csv
 import io
 import os
-import re
 import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
 from typing import Any
+
 import matplotlib.pyplot as plt
-from pathlib import Path
+import numpy as np
 
 from .utils import info, mkdir, normalize_tns_name, warn
 
@@ -189,3 +189,22 @@ def plot_spectra(
     # info(f"Spectrum plot saved → {output_path}") # 假设 info 是你自定义的 log
     print(f"Spectrum plot saved → {output_path}")
     return output_path
+
+
+def save_clean_two_column_spectrum(input_path: Path | str, output_path: Path) -> bool:
+    """Re-save a spectrum file as clean 2-column (wl flux) via np.savetxt.
+
+    Useful for tools like astrodash that require strictly formatted input.
+    """
+    result = _read_ascii_spectrum(input_path)
+    if result is None:
+        warn(f"Cannot clean {input_path}: parse failed")
+        return False
+
+    wl, flux = result
+    mkdir(output_path.parent)
+    # No header line — tools like astrodash/pandas expect pure numeric data
+    np.savetxt(output_path, np.column_stack((wl, flux)),
+               fmt=["%.4f", "%.6e"], delimiter="  ")
+    info(f"Clean spectrum saved → {output_path}")
+    return True

@@ -37,8 +37,21 @@ Five sections, all flattened at load time:
 ### `.env`
 
 ```env
-TNS_USER_ID=4299
-TNS_USER_NAME=Zzzaurak
+# TNS user credentials (no bot needed; works for staged CSV catalog download).
+# Get yours from your TNS account page (My Account → User-Agent specification).
+TNS_USER_ID=
+TNS_USER_NAME=
+
+# Put your Lasair API token after the equals sign. Do not commit a real token.
+# Both download scripts read this file automatically from the project root.
+LASAIR_API_TOKEN=
+
+# Backward-compatible alias. Leave blank unless you have old shell setup using this name.
+LASAIR_TOKEN=
+
+# WISeREP personal API key (optional — public spectra are accessible without it).
+# Get yours from https://www.wiserep.org/user → My Account → Create new API Key.
+WISEREP_API_KEY=
 ```
 
 **Current auth mode: USER** (no bot API key). The pipeline downloads the TNS public catalog CSV (user-auth required) and scrapes the object page HTML.
@@ -89,8 +102,25 @@ TNS_USER_NAME=Zzzaurak
 - **Light curve plot**: `output/{target}/lightcurve/lightcurve_lasair.png` — matplotlib plot with g/r filter coloring
 - **Spectra CSV**: `output/{target}/spectrum/spectra_wiserep.csv` — spectra metadata from WISeREP
 - **Spectra plot**: `output/{target}/spectrum/spectra_wiserep.png` — overlaid spectrum curves
-- **Spectrum files**: `output/{target}/spectrum/spectrum_*.ascii` — downloaded spectral data
+- **Spectrum files**: `output/{target}/spectrum/spectrum_*.ascii` — raw downloaded spectral data
+- **Clean 2-column spectra**: `output/{target}/spectrum/spectrum_*.dat` — `np.savetxt` cleaned (wl flux), for astrodash
 - **Catalog cache**: `data/tns_public_objects.csv` (+ `.zip`)
+
+## Conda Environments
+
+| Env | Python | Used For |
+|-----|--------|----------|
+| `astro_env` | 3.10 | All functionality: TNS pipeline, observability, finder charts, light curves, spectrum download/plotting, [astrodash](https://github.com/daniel-murray/astrodash) classification |
+
+**Requirements**: astrodash needs `numpy < 1.24` and `tensorflow < 2.16`. The `envs/environment_astro_env.yml` file pins these constraints.
+
+- `.env` MUST NOT be committed (contains TNS credentials)
+- `output/` and `data/` are gitignored
+- TNS Get Object API requires **bot** credentials → pipeline uses public catalog + page scraping instead
+- The IERS warning about leap seconds is harmless (set `iers.conf.auto_download = False`)
+- Target name normalization: strips `SN`/`AT` prefix, removes spaces for TNS lookup
+- Config key flattening: nested dict sections (`observing`, `tns`, `output`) are flattened into a single dict; keys are `lower_snake_case`
+- astro_env for astrodash must use `numpy < 1.24` and `tensorflow < 2.16` (or else `np.array([[np.zeros(n),...]])` and `array != []` fail in newer numpy)
 
 ## Auxiliary Data Modules
 
@@ -147,7 +177,7 @@ TNS_USER_NAME=Zzzaurak
 ## Testing
 
 ```bash
-conda activate tardis
+conda activate astro_env
 python scripts/fetch_target_params.py
 # or
 python -m src.pipeline
