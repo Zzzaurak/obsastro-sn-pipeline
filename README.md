@@ -11,6 +11,9 @@ sn-pipline/
 ├── src/
 │   ├── pipeline.py            # 核心流水线（数据获取、观测窗计算、报告生成）
 │   ├── finder.py              # 找星图生成（astroquery SkyView + matplotlib）
+│   ├── lasair.py              # Lasair 光变曲线获取
+│   ├── wiserep.py             # WISeREP 光谱数据获取
+│   ├── fetch_aux_data.py      # 辅助数据获取入口（光变曲线 + 光谱）
 │   ├── config.py              # 配置加载工具
 │   ├── coordinates.py         # 坐标格式转换（度 ↔ 时角）
 │   ├── observability.py       # 可观测性计算
@@ -19,7 +22,8 @@ sn-pipline/
 │   ├── tns.py                 # TNS API 集成
 │   └── utils.py               # 工具函数（HTTP、认证、CSV 等）
 ├── scripts/
-│   └── fetch_target_params.py # 目标参数获取入口脚本
+│   ├── fetch_target_params.py # 目标参数获取入口
+│   └── fetch_aux_data.py      # 辅助数据获取入口（光变曲线 + 光谱）
 ├── output/                    # 输出目录（每个目标一个子目录）
 ├── data/                      # TNS 公共目录缓存
 ├── requirements.txt           # Python 依赖
@@ -111,11 +115,30 @@ python -m src.pipeline
 输出按目标组织在 `output/<目标名>/` 中：
 
 ```
-output/SN2026kid/
-├── finder_TNS_tns_2026kid_atrep_301179_STSP.png   # TNS 找星图
+output/SN2026fov/
+├── sn_report_2026-05-08_SN2026fov.txt             # 观测报告
+├── finder_TNS_tns_2026fov_atrep_*.jpg             # TNS 找星图
 ├── finder_astroquery_DSS2_Red.png                 # astroquery 找星图
-└── sn_report_2026-05-08_SN2026kid.txt             # 观测报告
+├── lightcurve/
+│   ├── lightcurve_lasair.csv                      # Lasair 光变曲线数据
+│   └── lightcurve_lasair.png                      # 光变曲线图
+└── spectrum/
+    ├── spectra_wiserep.csv                        # WISeREP 光谱元数据
+    ├── spectra_wiserep.png                        # 光谱图
+    └── spectrum_*.ascii                           # 光谱数据文件
 ```
+
+### 4. 获取辅助数据（光变曲线 + 光谱）
+
+```bash
+python scripts/fetch_aux_data.py
+# 或
+python -m src.fetch_aux_data
+```
+
+- **Lasair** — 使用 `.env` 中的 `LASAIR_API_TOKEN`，通过 ZTF ID 从 Lasair API 获取光变曲线
+- **WISeREP** — 从 WISeREP 搜索公共光谱数据，下载光谱文件并绘图
+- 配置中可分别开关：`lasair.lasair_enabled` 和 `wiserep.wiserep_enabled`
 
 ## 输出报告内容
 

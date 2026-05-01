@@ -11,6 +11,9 @@ Supernova observing pipeline that queries TNS (Transient Name Server) for target
 | `src/pipeline.py` | **Core orchestrator**: config loading, TNS data acquisition (catalog + page scraping), observability calculation, finder chart download, report generation | `run_pipeline(config_path)` |
 | `src/finder.py` | **Finder chart generator**: astroquery SkyView query + matplotlib WCS plot with crosshair, scale bar | `generate_finder_chart()` |
 | `scripts/fetch_target_params.py` | **CLI wrapper**: invokes `python -m src.pipeline` from project root | `main()` |
+| `src/fetch_aux_data.py` | **Aux data orchestrator**: Lasair light curve + WISeREP spectra acquisition | `run(config_path)` |
+| `src/lasair.py` | **Lasair light curve**: ZTF light curve download, CSV export, matplotlib plot with filters | `fetch_lasair_object()`, `plot_lightcurve()` |
+| `src/wiserep.py` | **WISeREP spectra**: spectrum metadata search, file download, ASCII parsing, plotting | `fetch_spectra_metadata()`, `download_spectrum_file()`, `plot_spectra()` |
 | `src/utils.py` | HTTP client, TNS credentials manager (`TnsCredentials`), `.env` loader, CSV I/O, rate-limit tracking | `load_env_file()`, `get_tns_credentials()`, `tns_auth_headers()` |
 | `src/tns.py` | Bot-mode TNS API integration (Get Object, Get File, public catalog download) | `download_tns_catalog()`, `fetch_tns_object()`, `download_tns_spectra_files()` |
 | `src/target.py` | `Target` dataclass with ~25 fields (coordinates, magnitudes, observability, URLs) | `Target`, `merge_targets()`, `filter_targets()` |
@@ -23,10 +26,12 @@ Supernova observing pipeline that queries TNS (Transient Name Server) for target
 
 ### `configs/sn_parameter.json`
 
-Three sections, all flattened at load time:
+Five sections, all flattened at load time:
 
 - **`observing`**: `target`, `date`, `site_lat`, `site_lon`, `site_elevation_m`, `tz_offset`, `min_alt` (airmass≤2 threshold), `sun_alt_limit` (twilight), `time_step_minutes`
 - **`tns`**: `enabled`, `download_files` (finder chart), `pause_seconds`
+- **`lasair`**: `lasair_enabled`
+- **`wiserep`**: `wiserep_enabled`
 - **`output`**: `out_dir`, `report_file` (template with `{date}` and `{target}` placeholders), `finder_fov_arcmin`
 
 ### `.env`
@@ -80,7 +85,55 @@ TNS_USER_NAME=Zzzaurak
 - **Report**: `output/{target}/sn_report_{date}_{target}.txt` — plain text with target info, observing window, finder chart status
 - **Finder chart (TNS)**: `output/{target}/finder_TNS_{filename}` — downloaded from TNS if available
 - **Finder chart (astroquery)**: `output/{target}/finder_astroquery_{survey}.png` — generated via SkyView + matplotlib
+- **Light curve CSV**: `output/{target}/lightcurve/lightcurve_lasair.csv` — ZTF photometry from Lasair
+- **Light curve plot**: `output/{target}/lightcurve/lightcurve_lasair.png` — matplotlib plot with g/r filter coloring
+- **Spectra CSV**: `output/{target}/spectrum/spectra_wiserep.csv` — spectra metadata from WISeREP
+- **Spectra plot**: `output/{target}/spectrum/spectra_wiserep.png` — overlaid spectrum curves
+- **Spectrum files**: `output/{target}/spectrum/spectrum_*.ascii` — downloaded spectral data
 - **Catalog cache**: `data/tns_public_objects.csv` (+ `.zip`)
+
+## Auxiliary Data Modules
+
+### Lasair (`src/lasair.py`)
+
+`fetch_lasair_object(ztf_id)`:
+- Queries `https://lasair-ztf.lsst.ac.uk/api/object/?objectId={ztf_id}`
+- Auth via `LASAIR_API_TOKEN` from `.env` (GET query param or header)
+- Returns dict with `candidates` (detections) and `forcedphot` (forced photometry)
+
+`plot_lightcurve(candidates, target_name, output_path, *, ztf_id="", obs_date="")`:
+- Calendar date x-axis (astropy `Time` mjd→datetime, with `%b %d` formatting)
+- AB magnitude y-axis (inverted)
+- g-band (green), r-band (red) color coding
+- Detections as filled circles with error bars, upper limits as downward triangles
+- Annotation: last photometry date and days before observing date
+
+### WISeREP (`src/wiserep.py`)
+
+`fetch_spectra_metadata(objname)`:
+- GET `https://www.wiserep.org/search/spectra?name={name}&format=tsv`
+- `name` param uses IAU name WITHOUT SN/AT prefix (e.g., `2026fov` not `SN2026fov`)
+- Returns ZIP containing TSV with spectra metadata
+- Optional `WISEREP_API_KEY` in `.env` for private data access
+
+`plot_spectra(spectrum_files, target_name, output_path)`:
+- Parses 2-column ASCII spectra (wavelength, flux)
+- Overlays up to 5 spectra on single plot with wavelength in Angstroms
+
+## Lasair Data Flow
+
+1. **Get ZTF ID**: Extract from TNS catalog row's `internal_names` field
+2. **Fetch object**: `fetch_lasair_object(ztf_id)` → candidates + forced photometry
+3. **Merge**: Combine detection and forced photometry candidates
+4. **Export CSV**: `save_lightcurve_csv(candidates, path)`
+5. **Plot**: `plot_lightcurve(candidates, target_name, path)`
+
+## WISeREP Data Flow
+
+1. **Search spectra**: `fetch_spectra_metadata(name)` → TSV metadata
+2. **Save CSV**: `save_spectra_csv(rows, path)` — metadata summary
+3. **Download files**: `download_spectrum_file(url, path)` — 2-column ASCII
+4. **Plot**: `plot_spectra(files, target_name, path)` — overlaid curves
 
 ## Important Notes
 
@@ -98,6 +151,10 @@ conda activate tardis
 python scripts/fetch_target_params.py
 # or
 python -m src.pipeline
+# Auxiliary data (light curves + spectra):
+python scripts/fetch_aux_data.py
+# or
+python -m src.fetch_aux_data
 ```
 
 ## Do NOT

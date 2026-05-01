@@ -1,6 +1,6 @@
 {
   "observing": {
-    "target": "SN2026fov",
+    "target": "SN2026kid",
     "date": "2026-05-08",
     "site_lat": 40.0,
     "site_lon": 116.3,
@@ -18,6 +18,12 @@
     "download_files": true,
     "pause_seconds": 6.5,
     "respect_rate_limit_headers": true
+  },
+  "lasair": {
+    "lasair_enabled": true
+  },
+  "wiserep": {
+    "wiserep_enabled": true
   },
   "output": {
     "out_dir": "output",
