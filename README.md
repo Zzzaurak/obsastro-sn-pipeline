@@ -10,6 +10,7 @@ sn-pipline/
 │   └── sn_parameter.json      # 观测参数配置文件
 ├── src/
 │   ├── pipeline.py            # 核心流水线（数据获取、观测窗计算、报告生成）
+│   ├── finder.py              # 找星图生成（astroquery SkyView + matplotlib）
 │   ├── config.py              # 配置加载工具
 │   ├── coordinates.py         # 坐标格式转换（度 ↔ 时角）
 │   ├── observability.py       # 可观测性计算
@@ -19,7 +20,7 @@ sn-pipline/
 │   └── utils.py               # 工具函数（HTTP、认证、CSV 等）
 ├── scripts/
 │   └── fetch_target_params.py # 目标参数获取入口脚本
-├── output/                    # 输出目录（报告 + 找星图）
+├── output/                    # 输出目录（每个目标一个子目录）
 ├── data/                      # TNS 公共目录缓存
 ├── requirements.txt           # Python 依赖
 └── .env                       # TNS 用户凭证（不上传 git）
@@ -44,6 +45,8 @@ pip install -r requirements.txt
 所需依赖：
 - `astropy>=5.0` — 天文坐标与可见性计算
 - `numpy>=1.21` — 数值计算
+- `astroquery>=0.4` — 天文在线数据查询（SkyView 找星图）
+- `matplotlib>=3.5` — 找星图绘制
 
 ### 2. TNS 凭证配置
 
@@ -105,7 +108,14 @@ python -m src.pipeline
 
 ### 3. 查看输出
 
-报告保存在 `output/sn_report_{日期}_{目标}.txt`，找星图保存在 `output/images/`。
+输出按目标组织在 `output/<目标名>/` 中：
+
+```
+output/SN2026kid/
+├── finder_TNS_tns_2026kid_atrep_301179_STSP.png   # TNS 找星图
+├── finder_astroquery_DSS2_Red.png                 # astroquery 找星图
+└── sn_report_2026-05-08_SN2026kid.txt             # 观测报告
+```
 
 ## 输出报告内容
 
@@ -117,7 +127,7 @@ python -m src.pipeline
 | **Mag** | 最新测光星等（含日期和滤光片） | `16.2 Clear- (4/23)` |
 | **Window** | 目标高度角 ≥ 30° 的时间窗口 | `20:30 - 03:50 (+1d) CST` |
 | **Max Altitude** | 当晚最大高度角及时间 | `73.7 deg at 00:20 CST` |
-| **Finding Chart** | 找星图（TNS 下载 + Aladin Lite 链接） | 本地 PNG 文件 + 在线星图 URL |
+| **Finding Chart** | 找星图（TNS 下载 + astroquery DSS2 绘制 + Aladin Lite 链接） | 本地 PNG 文件 + 在线星图 URL |
 
 ## TNS 数据获取方式
 

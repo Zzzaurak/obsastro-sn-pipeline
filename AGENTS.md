@@ -9,6 +9,7 @@ Supernova observing pipeline that queries TNS (Transient Name Server) for target
 | File | Role | Entry Points |
 |------|------|-------------|
 | `src/pipeline.py` | **Core orchestrator**: config loading, TNS data acquisition (catalog + page scraping), observability calculation, finder chart download, report generation | `run_pipeline(config_path)` |
+| `src/finder.py` | **Finder chart generator**: astroquery SkyView query + matplotlib WCS plot with crosshair, scale bar | `generate_finder_chart()` |
 | `scripts/fetch_target_params.py` | **CLI wrapper**: invokes `python -m src.pipeline` from project root | `main()` |
 | `src/utils.py` | HTTP client, TNS credentials manager (`TnsCredentials`), `.env` loader, CSV I/O, rate-limit tracking | `load_env_file()`, `get_tns_credentials()`, `tns_auth_headers()` |
 | `src/tns.py` | Bot-mode TNS API integration (Get Object, Get File, public catalog download) | `download_tns_catalog()`, `fetch_tns_object()`, `download_tns_spectra_files()` |
@@ -59,6 +60,12 @@ TNS_USER_NAME=Zzzaurak
    - Search `<img>` tags for files containing "atrep", "finder", "chart", "stamp"
    - Fallback: search `<a>` tags linking to `.png/.jpg`
 
+6. **Astroquery finder chart** (`generate_finder_chart()`):
+   - Query SkyView for survey cutout (DSS2 Red, configurable FOV)
+   - Plot with matplotlib + astropy WCS projection
+   - Annotate with crosshair at target position and scale bar
+   - Save to `output/{target}/finder_astroquery_{survey}.png`
+
 ## Observability
 
 `compute_observing_window()`:
@@ -70,8 +77,9 @@ TNS_USER_NAME=Zzzaurak
 
 ## Output
 
-- **Report**: `output/sn_report_{date}_{target}.txt` — plain text with target info, observing window, finder chart status
-- **Finder chart**: `output/images/{target}_finder_{filename}` — downloaded from TNS if available
+- **Report**: `output/{target}/sn_report_{date}_{target}.txt` — plain text with target info, observing window, finder chart status
+- **Finder chart (TNS)**: `output/{target}/finder_TNS_{filename}` — downloaded from TNS if available
+- **Finder chart (astroquery)**: `output/{target}/finder_astroquery_{survey}.png` — generated via SkyView + matplotlib
 - **Catalog cache**: `data/tns_public_objects.csv` (+ `.zip`)
 
 ## Important Notes

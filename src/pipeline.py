@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from .coordinates import deg_to_dms, deg_to_hms, sexagesimal_to_deg
+from .finder import generate_finder_chart
 from .target import Target
 from .utils import (
     clean_filename,
@@ -448,6 +449,7 @@ def format_report(
     window: dict[str, Any],
     tz_offset: float,
     tns_finder_status: str,
+    astroquery_finder_status: str,
     aladin_url: str,
 ) -> str:
     tz_hr = tz_offset
@@ -522,15 +524,25 @@ def format_report(
     lines.extend(["", "Finding Chart:"])
 
     if tns_finder_status.startswith("downloaded"):
-        lines.append(f"  TNS:          {tns_finder_status}")
+        lines.append(f"  TNS:            {tns_finder_status}")
     elif tns_finder_status.startswith("not available"):
-        lines.append(f"  TNS:          not available for this target")
+        lines.append(f"  TNS:            not available for this target")
     elif tns_finder_status.startswith("error"):
-        lines.append(f"  TNS:          download failed — {tns_finder_status}")
+        lines.append(f"  TNS:            download failed — {tns_finder_status}")
     else:
-        lines.append(f"  TNS:          {tns_finder_status}")
+        lines.append(f"  TNS:            {tns_finder_status}")
+
+    if astroquery_finder_status.startswith("generated"):
+        lines.append(f"  Astroquery:     {astroquery_finder_status}")
+    elif astroquery_finder_status.startswith("error"):
+        lines.append(f"  Astroquery:     failed — {astroquery_finder_status}")
+    elif astroquery_finder_status.startswith("skipped"):
+        lines.append(f"  Astroquery:     skipped (no coordinates)")
+    else:
+        lines.append(f"  Astroquery:     {astroquery_finder_status}")
+
     if aladin_url:
-        lines.append(f"  Aladin Lite:  {aladin_url}")
+        lines.append(f"  Aladin Lite:    {aladin_url}")
     lines.extend(["", "=" * 44])
     return "\n".join(lines) + "\n"
 
@@ -581,8 +593,7 @@ def run_pipeline(config_path: str | None = None) -> int:
         return 1
 
     date_str = cfg.get("date", dt.date.today().isoformat())
-    out_dir = Path(cfg.get("out_dir", "output"))
-    images_dir = out_dir / "images"
+    out_base = Path(cfg.get("out_dir", "output"))
     pause_s = float(cfg.get("pause_seconds", 2.0))
 
     info(f"Pipeline: target={target_name}  date={date_str}")
@@ -630,19 +641,22 @@ def run_pipeline(config_path: str | None = None) -> int:
         info(f"Window: {window['window_start']}–{window['window_end']} "
              f"(max alt {window['max_alt']:.1f}°)")
 
-    # ── Step 4: Download TNS finder chart ──
+    # ── Step 4: Create per-target output directory & download finder charts ──
+    clean_tgt = clean_filename(target_name)
+    out_dir = out_base / clean_tgt
+
     aladin_url = generate_aladin_lite_url(
         target.ra_deg, target.dec_deg,
         fov_arcmin=float(cfg.get("finder_fov_arcmin", 10.0)),
     )
 
+    # 4a. TNS finder chart
     tns_finder_status = "not attempted"
     if cfg.get("download_files", True) and image_urls:
         downloaded = False
         for img_url in image_urls[:3]:
             fname = img_url.split("/")[-1].split("?")[0]
-            safe_name = clean_filename(target.name)
-            dest = images_dir / f"{safe_name}_finder_{fname}"
+            dest = out_dir / f"finder_TNS_{fname}"
             info(f"Downloading TNS finder: {img_url}")
             if download_file(img_url, dest, timeout=60):
                 tns_finder_status = f"downloaded → {dest}"
@@ -655,14 +669,30 @@ def run_pipeline(config_path: str | None = None) -> int:
     else:
         tns_finder_status = "disabled in config"
 
+    # 4b. Astroquery finder chart
+    astroquery_finder_status = "not attempted"
+    if cfg.get("download_files", True) and target.ra_deg is not None and target.dec_deg is not None:
+        chart_path = generate_finder_chart(
+            ra_deg=target.ra_deg,
+            dec_deg=target.dec_deg,
+            target_name=target.name,
+            output_dir=out_dir,
+            fov_arcmin=float(cfg.get("finder_fov_arcmin", 10.0)),
+        )
+        if chart_path:
+            astroquery_finder_status = f"generated → {chart_path}"
+        else:
+            astroquery_finder_status = "error: generation failed"
+    else:
+        astroquery_finder_status = "skipped: no coordinates"
+
     # ── Step 5: Generate & save report ──
     report = format_report(
         target, date_str, window, float(cfg["tz_offset"]),
-        tns_finder_status, aladin_url,
+        tns_finder_status, astroquery_finder_status, aladin_url,
     )
 
     report_tpl = str(cfg.get("report_file", "sn_report_{date}_{target}.txt"))
-    clean_tgt = clean_filename(target_name)
     report_file = report_tpl.replace("{date}", date_str).replace("{target}", clean_tgt)
     report_path = out_dir / report_file
     save_text(report_path, report)
