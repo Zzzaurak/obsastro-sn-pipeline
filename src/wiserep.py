@@ -9,6 +9,8 @@ import urllib.request
 import zipfile
 from pathlib import Path
 from typing import Any
+import matplotlib.pyplot as plt
+from pathlib import Path
 
 from .utils import info, mkdir, normalize_tns_name, warn
 
@@ -108,8 +110,9 @@ def download_spectrum_file(url: str, output_path: Path) -> bool:
         return False
 
 
-def _read_ascii_spectrum(filepath: Path) -> tuple[list[float], list[float]] | None:
+def _read_ascii_spectrum(filepath: Path | str) -> tuple[list[float], list[float]] | None:
     """Parse a WISeREP ASCII spectrum file (two-column: wavelength flux)."""
+    filepath = Path(filepath)
     try:
         text = filepath.read_text(encoding="utf-8", errors="replace")
     except Exception:
@@ -136,19 +139,18 @@ def _read_ascii_spectrum(filepath: Path) -> tuple[list[float], list[float]] | No
         return None
     return wavelengths, fluxes
 
-
 def plot_spectra(
-    spectrum_files: list[Path],
+    spectrum_files: list[Path | str],
     target_name: str,
-    output_path: Path,
+    output_path: Path | None = None,
+    *,
+    jupyter: bool = False,
 ) -> Path | None:
-    """Plot one or more spectra as overlaid curves."""
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
 
     plots = 0
-    mkdir(output_path.parent)
+
+    if not jupyter and output_path is not None:
+        output_path.parent.mkdir(parents=True, exist_ok=True) 
 
     fig, ax = plt.subplots(figsize=(10, 5))
     colors = plt.cm.tab10.colors
@@ -156,9 +158,10 @@ def plot_spectra(
     for i, sp_path in enumerate(spectrum_files[:5]):
         result = _read_ascii_spectrum(sp_path)
         if result is None:
+            print(f"Warning: {Path(sp_path).name} 读取失败或返回None，已跳过")
             continue
         wl, flux = result
-        label = sp_path.stem.replace("_", " ")
+        label = Path(sp_path).stem.replace("_", " ")
         ax.plot(wl, flux, lw=0.8, color=colors[i % len(colors)], label=label)
         plots += 1
 
@@ -173,8 +176,16 @@ def plot_spectra(
         ax.legend(loc="best", fontsize=8)
 
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
 
-    info(f"Spectrum plot saved → {output_path}")
+    if jupyter:
+        # 在 Jupyter 中显示图像
+        plt.show()
+        return None
+
+    # 如果不是 Jupyter，保存图片
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig) 
+
+    # info(f"Spectrum plot saved → {output_path}") # 假设 info 是你自定义的 log
+    print(f"Spectrum plot saved → {output_path}")
     return output_path
