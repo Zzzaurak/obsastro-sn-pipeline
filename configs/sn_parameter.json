@@ -1,0 +1,27 @@
+{
+  "observing": {
+    "target": "SN2026kid",
+    "date": "2026-05-08",
+    "site_lat": 40.0,
+    "site_lon": 116.3,
+    "site_elevation_m": 50.0,
+    "tz_offset": 8.0,
+    "min_alt": 30.0,
+    "min_visible_hours": 0.5,
+    "sun_alt_limit": -12.0,
+    "time_step_minutes": 10
+  },
+  "tns": {
+    "enabled": true,
+    "download_photometry": true,
+    "download_spectra_metadata": false,
+    "download_files": true,
+    "pause_seconds": 6.5,
+    "respect_rate_limit_headers": true
+  },
+  "output": {
+    "out_dir": "output",
+    "report_file": "sn_report_{date}_{target}.txt",
+    "finder_fov_arcmin": 10.0
+  }
+}
