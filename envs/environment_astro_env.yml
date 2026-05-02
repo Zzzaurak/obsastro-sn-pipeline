@@ -4,12 +4,12 @@ channels:
   - defaults
 dependencies:
   - python=3.10
-  - numpy<1.24
   - matplotlib
   - pandas
   - scipy
   - pip
   - pip:
+    - numpy==1.23.5    # <=1.23.5 required by astrodash; TF<2.16 also needs <1.24
     - astropy>=5.0
     - astroquery>=0.4
     - tensorflow<2.16

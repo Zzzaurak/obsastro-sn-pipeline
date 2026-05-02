@@ -54,6 +54,10 @@ conda env create -f envs/environment_astro_env.yml
 
 **注意**：astrodash 要求 `numpy<1.24` + `tensorflow<2.16`，环境文件已锁定版本，无需手动操作。如需纯 `pip` 安装（不推荐），可配合 `numpy<1.24` 使用 `requirements.txt`。
 
+> **迁移到新电脑的注意事项**：必须用 `conda env create -f envs/environment_astro_env.yml` 一键重建环境，不能手动装包。pip 的 tensorflow 依赖约束 `numpy>=1.23.5,<2.0.0` 会在安装时把 conda 的 numpy 从 1.23.5 升到 1.26.x，导致 astrodash 内部 `np.array([[np.zeros(n),...]])` 报错。解决方法是将 `numpy==1.23.5` 也写进 YAML 的 pip 依赖中。
+>
+> 验证命令：`D:\Anaconda\envs\astro_env\python.exe -c "import numpy; print(numpy.__version__)"` 应输出 `1.23.5`。
+
 ```bash
 # 主流水线
 conda activate astro_env
@@ -182,6 +186,33 @@ python -m src.fetch_aux_data
 
 1. **公共目录 CSV** — 下载 `tns_public_objects.csv.zip`（缓存于 `data/`，24 小时内复用），从中提取目标基本参数（名称、类型、坐标、发现日期、红移、星等）
 2. **目标页面抓取** — 访问 TNS 目标页面，提取最新测光数据和找星图链接
+
+## Jupyter Notebook 使用
+
+`notebooks/spectral_processing.ipynb` 实现了完整的光谱后处理流程：
+
+1. **读取和查看光谱** — 从 `output/` 加载 `.dat` 光谱文件并绘图
+2. **astrodash 分类** — 使用 DASH 深度学习模型进行超新星光谱自动分类
+3. **膨胀速度测量** — 基于特征吸收线的蓝移计算超新星抛射物速度
+
+### 运行前准备
+
+notebook 需要已生成的 `output/` 数据。在其他电脑迁移后需重新生成：
+
+```bash
+conda activate astro_env
+python scripts/fetch_target_params.py   # 获取 TNS 数据、生成观测报告
+python scripts/fetch_aux_data.py        # 下载光变曲线和光谱数据（生成 .dat 文件）
+```
+
+### 启动 notebook
+
+```bash
+conda activate astro_env
+jupyter notebook notebooks/spectral_processing.ipynb
+```
+
+确保 notebook 的 kernel 选择 `astro_env` 环境。
 
 ## 注意事项
 

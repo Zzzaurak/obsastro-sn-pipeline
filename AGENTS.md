@@ -114,6 +114,8 @@ WISEREP_API_KEY=
 
 **Requirements**: astrodash needs `numpy < 1.24` and `tensorflow < 2.16`. The `envs/environment_astro_env.yml` file pins these constraints.
 
+**CRITICAL — numpy pinning**: numpy MUST be `1.23.5` (the latest `< 1.24`). Even though conda installs `numpy<1.24`, TF's pip dependency `numpy>=1.23.5,<2.0.0` will upgrade numpy to `1.26.x` unless numpy is ALSO pinned in the pip section of the YAML as `numpy==1.23.5`. Always verify with `D:\Anaconda\envs\astro_env\python.exe -c "import numpy; print(numpy.__version__)"` after env creation.
+
 - `.env` MUST NOT be committed (contains TNS credentials)
 - `output/` and `data/` are gitignored
 - TNS Get Object API requires **bot** credentials → pipeline uses public catalog + page scraping instead
