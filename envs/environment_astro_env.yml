@@ -14,3 +14,4 @@ dependencies:
     - astroquery>=0.4
     - tensorflow<2.16
     - astrodash
+    - PyQt5

@@ -6,3 +6,4 @@ tensorflow<2.16
 astrodash
 pandas
 scipy
+PyQt5
