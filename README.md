@@ -1,3 +1,7 @@
+---
+注意: 请AI编辑此文件时尽可能适合人看，给AI看的主要是`AGENTS.md`
+---
+
 # SN 观测流水线 (Supernova Observing Pipeline)
 
 从 [TNS (Transient Name Server)](https://www.wis-tns.org) 获取超新星目标数据，计算观测夜间可见性窗口，并生成观测报告。
@@ -27,7 +31,6 @@ sn-pipline/
 ├── output/                    # 输出目录（每个目标一个子目录）
 ├── data/                      # TNS 公共目录缓存
 ├── envs/                      # Conda 环境定义文件
-│   ├── environment_tardis.yml
 │   └── environment_astro_env.yml
 ├── requirements.txt           # Python 依赖（备选安装方式）
 └── .env                       # TNS 用户凭证（不上传 git）
@@ -38,27 +41,22 @@ sn-pipline/
 ### 一键创建环境（新电脑/其他人使用）
 
 ```bash
-# 主流水线环境（Python 3.13）
-conda env create -f envs/environment_tardis.yml
-
-# 光谱分类环境（Python 3.10，astrodash 专用）
 conda env create -f envs/environment_astro_env.yml
 ```
 
-创建后每次使用只需 `conda activate tardis` 或 `conda activate astro_env`。
+创建后每次使用只需 `conda activate astro_env`。一个环境涵盖所有功能（主流水线 + 光变曲线 + 光谱 + astrodash 分类）。
 
 ### 环境说明
 
-本流水线需要 conda 环境，两个环境分工不同：
-
 | 环境 | Python | 用途 |
 |------|--------|------|
-| `tardis` | 3.13 | 主流水线 — TNS 查询、观测窗计算、找星图、光变曲线、光谱下载与绘图 |
-| `astro_env` | 3.10 | 光谱后处理 — [astrodash](https://github.com/daniel-murray/astrodash) 分类（该库不支持高版本 Python，且需要 `numpy<1.24`） |
+| `astro_env` | 3.10 | 全部功能 — TNS 查询、观测窗、找星图、光变曲线、光谱下载/绘图、astrodash 分类 |
+
+**注意**：astrodash 要求 `numpy<1.24` + `tensorflow<2.16`，环境文件已锁定版本，无需手动操作。如需纯 `pip` 安装（不推荐），可配合 `numpy<1.24` 使用 `requirements.txt`。
 
 ```bash
 # 主流水线
-conda activate tardis
+conda activate astro_env
 
 # 光谱分类
 conda activate astro_env
@@ -70,11 +68,12 @@ conda activate astro_env
 pip install -r requirements.txt
 ```
 
-所需依赖（`tardis` 环境）：
+所需依赖（`astro_env` 环境）：
 - `astropy>=5.0` — 天文坐标与可见性计算
-- `numpy>=1.21` — 数值计算
+- `numpy<1.24` — 数值计算
 - `astroquery>=0.4` — 天文在线数据查询（SkyView 找星图）
 - `matplotlib>=3.5` — 找星图绘制
+- `tensorflow<2.16` — astrodash 分类
 
 ### 2. TNS 凭证配置
 
@@ -124,7 +123,7 @@ TNS_USER_NAME=你的用户名
 ### 2. 运行流水线
 
 ```bash
-conda activate tardis
+conda activate astro_env
 python scripts/fetch_target_params.py
 ```
 

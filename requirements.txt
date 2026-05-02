@@ -1,7 +1,8 @@
 astropy>=5.0
-numpy>=1.21
-astroquery>=0.4
+numpy<1.24
 matplotlib>=3.5
+astroquery>=0.4
+tensorflow<2.16
 astrodash
-PyQt5
 pandas
+scipy

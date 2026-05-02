@@ -6,8 +6,8 @@ Usage:
     python scripts/fetch_aux_data.py --config configs/my.json  # custom config
 
 Requirements:
-    Activate the tardis conda environment first:
-        conda activate tardis
+    Activate the astro_env conda environment first:
+        conda activate astro_env
 """
 
 from __future__ import annotations
