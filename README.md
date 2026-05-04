@@ -11,7 +11,8 @@
 ```
 sn-pipline/
 ├── configs/
-│   └── sn_parameter.json      # 观测参数配置文件
+│   ├── sn_parameter.json      # 观测参数配置文件
+│   └── tardis/                # TARDIS 模拟配置模板
 ├── src/
 │   ├── pipeline.py            # 核心流水线（数据获取、观测窗计算、报告生成）
 │   ├── finder.py              # 找星图生成（astroquery SkyView + matplotlib）
@@ -26,8 +27,9 @@ sn-pipline/
 │   ├── tns.py                 # TNS API 集成
 │   └── utils.py               # 工具函数（HTTP、认证、CSV 等）
 ├── scripts/
-│   ├── fetch_target_params.py # 目标参数获取入口
-│   └── fetch_aux_data.py      # 辅助数据获取入口（光变曲线 + 光谱）
+│   ├── fetch_target_params.py       # 目标参数获取入口
+│   ├── fetch_aux_data.py            # 辅助数据获取入口（光变曲线 + 光谱）
+│   └── download_tardis_atom_data.py # 下载 TARDIS 原子数据
 ├── output/                    # 输出目录（每个目标一个子目录）
 ├── data/                      # TNS 公共目录缓存
 ├── envs/                      # Conda 环境定义文件
@@ -38,7 +40,7 @@ sn-pipline/
 
 ## 环境准备
 
-### 一键创建环境（新电脑/其他人使用）
+### 1. 一键创建环境（新电脑/其他人使用）
 
 ```bash
 conda env create -f envs/environment_astro_env.yml
@@ -50,7 +52,8 @@ conda env create -f envs/environment_astro_env.yml
 
 | 环境 | Python | 用途 |
 |------|--------|------|
-| `astro_env` | 3.10 | 全部功能 — TNS 查询、观测窗、找星图、光变曲线、光谱下载/绘图、astrodash 分类 |
+| `astro_env` | 3.10 | 主流水线 — TNS 查询、观测窗、找星图、光变曲线、光谱下载/绘图、astrodash 分类 |
+| `tardis` | 3.13 | TARDIS 蒙特卡洛辐射传输模拟 — 超新星光谱建模与对比分析 |
 
 **注意**：astrodash 要求 `numpy<1.24` + `tensorflow<2.16`，环境文件已锁定版本，无需手动操作。如需纯 `pip` 安装（不推荐），可配合 `numpy<1.24` 使用 `requirements.txt`。
 
@@ -64,6 +67,9 @@ conda activate astro_env
 
 # 光谱分类
 conda activate astro_env
+
+# tardis 模拟
+conda activate tardis
 ```
 
 如需新环境安装依赖：
@@ -78,14 +84,16 @@ pip install -r requirements.txt
 - `astroquery>=0.4` — 天文在线数据查询（SkyView 找星图）
 - `matplotlib>=3.5` — 找星图绘制
 - `tensorflow<2.16` — astrodash 分类
+- ...
 
-### 2. TNS 凭证配置
+### 2. 凭证配置
 
-编辑 `.env` 文件，填入你的 TNS 账户信息：
+编辑 `.env` 文件，填入你的 TNS 账户信息与Lasair API token：
 
 ```env
 TNS_USER_ID=你的ID
 TNS_USER_NAME=你的用户名
+LASAIR_API_TOKEN=你的Lasair API Token
 ```
 
 可在 TNS 网站 → My Account → User-Agent specification 获取。
@@ -189,30 +197,36 @@ python -m src.fetch_aux_data
 
 ## Jupyter Notebook 使用
 
-`notebooks/spectral_processing.ipynb` 实现了完整的光谱后处理流程：
+### 光谱后处理 (`spectral_processing.ipynb`)
 
 1. **读取和查看光谱** — 从 `output/` 加载 `.dat` 光谱文件并绘图
 2. **astrodash 分类** — 使用 DASH 深度学习模型进行超新星光谱自动分类
 3. **膨胀速度测量** — 基于特征吸收线的蓝移计算超新星抛射物速度
 
-### 运行前准备
-
-notebook 需要已生成的 `output/` 数据。在其他电脑迁移后需重新生成：
-
 ```bash
 conda activate astro_env
 python scripts/fetch_target_params.py   # 获取 TNS 数据、生成观测报告
 python scripts/fetch_aux_data.py        # 下载光变曲线和光谱数据（生成 .dat 文件）
-```
-
-### 启动 notebook
-
-```bash
-conda activate astro_env
 jupyter notebook notebooks/spectral_processing.ipynb
 ```
 
-确保 notebook 的 kernel 选择 `astro_env` 环境。
+### TARDIS 光谱模拟 (`tardis_simulation.ipynb`)
+
+基于观测光谱和 DASH 分类结果运行 TARDIS 辐射传输模拟，并与实际观测对比：
+
+1. **加载观测光谱** — 从 `output/` 读取 WISeREP 光谱
+2. **构建 TARDIS 配置** — 根据红移、类型（Ia/II/Ibc）、膨胀速度估算光度、爆发时间，自动生成 YAML
+3. **运行模拟** — 蒙特卡洛辐射传输，输出合成光谱
+4. **对比分析** — 模拟 vs 观测光谱叠加对比 + 残差图
+5. **保存结果** — 输出到 `output/{target}/tardis/`
+
+```bash
+conda activate tardis
+python scripts/download_tardis_atom_data.py  # 首次使用：下载原子数据 (~212 MB)
+jupyter notebook notebooks/tardis_simulation.ipynb
+```
+
+notebook 内切换目标只需修改 `TARGET` 变量。
 
 ## 注意事项
 
