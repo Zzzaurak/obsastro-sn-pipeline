@@ -7,3 +7,4 @@ astrodash
 pandas
 scipy
 PyQt5
+specutils
