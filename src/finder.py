@@ -5,6 +5,62 @@ from pathlib import Path
 from .utils import info, mkdir, warn
 
 
+def _target_arrow_points(
+    target_x: float,
+    target_y: float,
+    data_shape: tuple[int, ...],
+    *,
+    clearance_px: float = 18.0,
+    length_px: float = 80.0,
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    """Return arrow start/end pixels that point near, but not over, the target."""
+    import math
+
+    ny, nx = data_shape[-2], data_shape[-1]
+    margin = 8.0
+    unit = 1.0 / math.sqrt(2.0)
+    # Prefer an arrow from upper-left; fall back to other corners near image edges.
+    offsets = [(-unit, unit), (unit, unit), (-unit, -unit), (unit, -unit)]
+
+    for ox, oy in offsets:
+        start = (target_x + ox * length_px, target_y + oy * length_px)
+        end = (target_x + ox * clearance_px, target_y + oy * clearance_px)
+        if (
+            margin <= start[0] <= nx - margin
+            and margin <= start[1] <= ny - margin
+            and margin <= end[0] <= nx - margin
+            and margin <= end[1] <= ny - margin
+        ):
+            return start, end
+
+    # Last-resort clamp for targets near the frame boundary.
+    ox, oy = offsets[0]
+    start = (target_x + ox * length_px, target_y + oy * length_px)
+    end = (target_x + ox * clearance_px, target_y + oy * clearance_px)
+    return (
+        (min(max(start[0], margin), nx - margin), min(max(start[1], margin), ny - margin)),
+        (min(max(end[0], margin), nx - margin), min(max(end[1], margin), ny - margin)),
+    )
+
+
+def _draw_target_arrow(ax, target_x: float, target_y: float, data_shape: tuple[int, ...]) -> None:
+    start, end = _target_arrow_points(target_x, target_y, data_shape)
+    ax.annotate(
+        "",
+        xy=end,
+        xytext=start,
+        arrowprops={
+            "arrowstyle": "-|>",
+            "color": "red",
+            "lw": 2.2,
+            "mutation_scale": 18,
+            "shrinkA": 0,
+            "shrinkB": 0,
+        },
+        zorder=8,
+    )
+
+
 def _compass_vectors(wcs, x0: float, y0: float, length_arcmin: float) -> dict[str, tuple[float, float]] | None:
     """Return pixel endpoints for local north/east compass arrows."""
     try:
@@ -91,7 +147,7 @@ def generate_finder_chart(
     """Generate a finder chart using astroquery SkyView + matplotlib.
 
     Downloads a DSS2 survey cutout and plots it with WCS coordinates,
-    crosshair at target position, scale bar, and coordinate labels.
+    a target arrow, scale bar, compass, and coordinate labels.
 
     Parameters
     ----------
@@ -158,7 +214,7 @@ def generate_finder_chart(
         wcs = None
 
     # ── Plot ──
-    fig = plt.figure(figsize=(8, 8))
+    fig = plt.figure(figsize=(8, 8), facecolor="white")
 
     if wcs is not None and wcs.is_celestial:
         ax = fig.add_subplot(111, projection=wcs)
@@ -174,21 +230,12 @@ def generate_finder_chart(
 
     ax.imshow(data, cmap="gray_r", vmin=vmin, vmax=vmax, origin="lower", interpolation="nearest")
 
-    # ── Crosshair at target ──
+    # ── Arrow pointing to target ──
     if wcs is not None and wcs.is_celestial:
-        ax.plot(
-            ra_deg, dec_deg, "+", color="red", markersize=14,
-            markeredgewidth=2, transform=ax.get_transform("world"),
-        )
-        ax.plot(
-            ra_deg, dec_deg, "o", color="red", markersize=16,
-            markerfacecolor="none", markeredgewidth=1.5,
-            transform=ax.get_transform("world"),
-        )
+        target_x, target_y = wcs.world_to_pixel_values(ra_deg, dec_deg)
     else:
-        cx, cy = pixels / 2, pixels / 2
-        ax.axhline(cy, color="red", lw=1, alpha=0.5)
-        ax.axvline(cx, color="red", lw=1, alpha=0.5)
+        target_x, target_y = pixels / 2, pixels / 2
+    _draw_target_arrow(ax, float(target_x), float(target_y), data.shape)
 
     # ── Local N/E compass ──
     if not _draw_compass(ax, wcs, data.shape, fov_arcmin):
@@ -210,11 +257,11 @@ def generate_finder_chart(
     # ── Labels ──
     ax.set_xlabel("RA (J2000)")
     ax.set_ylabel("Dec (J2000)")
-    ax.set_title(f"Finder Chart: {target_name}\n{survey}, {fov_arcmin}' × {fov_arcmin}' FOV", fontsize=11)
+    ax.set_title(target_name, fontsize=13)
 
     # ── Save ──
     mkdir(dest.parent)
-    fig.savefig(dest, dpi=150, bbox_inches="tight", facecolor="black", edgecolor="black")
+    fig.savefig(dest, dpi=150, bbox_inches="tight", facecolor="white", edgecolor="none")
     plt.close(fig)
 
     info(f"Finder chart saved → {dest}")

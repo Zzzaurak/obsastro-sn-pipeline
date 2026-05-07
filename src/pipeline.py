@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import datetime as dt
+import html as html_lib
 import io
 import json
 import math
@@ -11,6 +12,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +22,6 @@ from .target import Target
 from .time_utils import datetime_to_jd, jd_to_iso
 from .utils import (
     clean_filename,
-    download_file,
     first_float,
     info,
     load_env_file,
@@ -44,6 +45,14 @@ class PhotometryPoint:
     source: str = ""
     date_utc: str = ""
     err: float | None = None
+
+
+@dataclass(frozen=True)
+class TnsFinderCandidate:
+    url: str
+    label: str
+    score: int
+    reason: str = ""
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -410,32 +419,253 @@ def update_target_photometry_from_page(target: Target, html: str) -> None:
         apply_photometry_point(target, latest)
 
 
+class _MediaTagParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.tags: list[tuple[str, dict[str, str]]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() not in {"a", "img"}:
+            return
+        self.tags.append((tag.lower(), {k.lower(): v or "" for k, v in attrs}))
+
+
+def _extract_html_media_tags(html: str) -> list[tuple[str, dict[str, str], str]]:
+    """Return media/link tags with nearby text for finder-chart classification."""
+    tags: list[tuple[str, dict[str, str], str]] = []
+    tag_re = re.compile(r"<(img|a)\b[^>]*>", re.I)
+    for match in tag_re.finditer(html):
+        parser = _MediaTagParser()
+        try:
+            parser.feed(match.group(0))
+        except Exception:
+            continue
+        if not parser.tags:
+            continue
+        tag, attrs = parser.tags[0]
+        lo = max(0, match.start() - 700)
+        hi = min(len(html), match.end() + 700)
+        context = _clean_html_fragment(html[lo:hi])
+        tags.append((tag, attrs, context))
+    return tags
+
+
+def _clean_html_fragment(fragment: str) -> str:
+    text = re.sub(r"<script\b.*?</script>", " ", fragment, flags=re.DOTALL | re.I)
+    text = re.sub(r"<style\b.*?</style>", " ", text, flags=re.DOTALL | re.I)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = html_lib.unescape(text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _normalize_tns_link(url: str) -> str:
+    url = html_lib.unescape((url or "").strip())
+    if not url:
+        return ""
+    if url.startswith("//"):
+        url = f"https:{url}"
+    return urllib.parse.urljoin(TNS_BASE_URL, url)
+
+
+def _image_url_kind(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.netloc.lower()
+    path = parsed.path.lower()
+    if host.endswith("legacysurvey.org") and path.endswith("/cutout.jpg"):
+        return "legacy"
+    if host.endswith("skyserver.sdss.org") and "imgcutout/getjpeg" in path:
+        return "sdss"
+    if path.endswith((".png", ".jpg", ".jpeg")):
+        return "uploaded"
+    return ""
+
+
+def _has_bad_finder_context(text: str) -> bool:
+    lowered = text.lower()
+    bad_terms = (
+        "spectra",
+        "spectrum",
+        "spectroscopy",
+        "snid",
+        "sage",
+        "template",
+        "best match",
+        "rest wavelength",
+        "obs. wavelength",
+        "obs wavelength",
+    )
+    return any(term in lowered for term in bad_terms)
+
+
+def _has_positive_finder_context(text: str, url: str) -> bool:
+    combined = f"{text} {urllib.parse.urlparse(url).path}".lower()
+    positive_terms = (
+        "finder",
+        "finding",
+        "finding chart",
+        "finder chart",
+        "chart",
+        "field",
+        "sky",
+        "cutout",
+        "stamp",
+    )
+    return any(term in combined for term in positive_terms)
+
+
+def _candidate_from_link(url: str, context: str) -> TnsFinderCandidate | None:
+    kind = _image_url_kind(url)
+    if not kind:
+        return None
+
+    if kind == "legacy":
+        return TnsFinderCandidate(url, "Legacy Survey cutout", 100, "known TNS sky cutout")
+    if kind == "sdss":
+        return TnsFinderCandidate(url, "SDSS cutout", 95, "known TNS sky cutout")
+
+    positive = _has_positive_finder_context(context, url)
+    if not positive:
+        return None
+    if _has_bad_finder_context(context):
+        return None
+    score = 80 if re.search(r"find(?:er|ing).*chart|finder|finding", f"{context} {url}", re.I) else 65
+    return TnsFinderCandidate(url, "TNS uploaded finder", score, "finder-like upload context")
+
+
+def find_tns_finder_candidates(html: str) -> list[TnsFinderCandidate]:
+    """Find and rank TNS page images that are likely to be real finder charts."""
+    best_by_url: dict[str, TnsFinderCandidate] = {}
+    for tag, attrs, context in _extract_html_media_tags(html):
+        attr_names = ("src", "data-src", "href") if tag == "img" else ("href", "data-src", "src")
+        for attr_name in attr_names:
+            url = _normalize_tns_link(attrs.get(attr_name, ""))
+            candidate = _candidate_from_link(url, context)
+            if candidate is None:
+                continue
+            current = best_by_url.get(candidate.url)
+            if current is None or candidate.score > current.score:
+                best_by_url[candidate.url] = candidate
+
+    return sorted(best_by_url.values(), key=lambda item: item.score, reverse=True)
+
+
 def find_page_image_urls(html: str) -> list[str]:
-    """Find image URLs on the TNS page that could be finder charts."""
-    urls = []
-    # First check <img> tags
-    for m in re.finditer(r'<img[^>]+src=["\']([^"\']+)["\']', html, re.I):
-        src = m.group(1)
-        if src.startswith("/"):
-            src = TNS_BASE_URL + src
-        fname = src.split("/")[-1].lower()
-        if any(kw in fname for kw in ("finder", "chart", "finding", "atrep", "field", "stamp")):
-            urls.append(src)
-    if not urls:
-        for m in re.finditer(r'<img[^>]+src=["\']([^"\']+)["\']', html, re.I):
-            src = m.group(1)
-            if src.startswith("/"):
-                src = TNS_BASE_URL + src
-            if re.search(r"atrep_\d+.*\.(png|jpg|jpeg)", src, re.I):
-                urls.append(src)
-    # Also check <a> links to images (TNS stores discovery report images via links)
-    if not urls:
-        for m in re.finditer(r'<a[^>]+href=["\']([^"\']+\.(?:png|jpg|jpeg))["\']', html, re.I):
-            href = m.group(1)
-            if href.startswith("/"):
-                href = TNS_BASE_URL + href
-            urls.append(href)
-    return urls
+    """Find ranked finder-chart image URLs on the TNS page."""
+    return [candidate.url for candidate in find_tns_finder_candidates(html)]
+
+
+def _image_magic_type(data: bytes) -> str:
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
+        return "image/gif"
+    return ""
+
+
+def _is_known_sky_cutout(candidate: TnsFinderCandidate) -> bool:
+    return candidate.label.lower().startswith(("legacy survey", "sdss"))
+
+
+def _white_background_fraction(image: Any) -> float:
+    try:
+        rgb = image.convert("RGB").resize((80, 80))
+    except Exception:
+        return 1.0
+    raw = rgb.tobytes()
+    if not raw:
+        return 1.0
+    white = 0
+    total = len(raw) // 3
+    for i in range(0, len(raw) - 2, 3):
+        if raw[i] > 235 and raw[i + 1] > 235 and raw[i + 2] > 235:
+            white += 1
+    return white / total if total else 1.0
+
+
+def validate_tns_finder_image(
+    data: bytes,
+    content_type: str,
+    candidate: TnsFinderCandidate,
+) -> tuple[bool, str]:
+    """Validate that downloaded bytes are an image and likely a finder/sky chart."""
+    content_type = (content_type or "").split(";")[0].strip().lower()
+    magic_type = _image_magic_type(data)
+    if content_type.startswith("text/") or data[:128].lstrip().lower().startswith(b"<!doctype html"):
+        return False, "response is HTML/text, not an image"
+    if not magic_type and not content_type.startswith("image/"):
+        return False, "response is not image bytes"
+
+    try:
+        from PIL import Image
+    except Exception:
+        if _is_known_sky_cutout(candidate):
+            return True, "accepted known sky cutout without Pillow"
+        return False, "Pillow unavailable for uploaded-image validation"
+
+    try:
+        image = Image.open(io.BytesIO(data))
+        width, height = image.size
+    except Exception as exc:
+        return False, f"image decode failed: {exc}"
+
+    if width < 80 or height < 80:
+        return False, f"image too small ({width}x{height})"
+    if _is_known_sky_cutout(candidate):
+        return True, f"validated known sky cutout ({width}x{height})"
+
+    white_fraction = _white_background_fraction(image)
+    if white_fraction > 0.45:
+        return False, f"white-background plot-like image ({white_fraction:.0%} white)"
+    return True, f"validated uploaded finder-like image ({width}x{height})"
+
+
+def _request_bytes_with_content_type(url: str, *, timeout: int = 60) -> tuple[bytes, str]:
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+    }
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        return response.read(), response.headers.get("Content-Type", "")
+
+
+def _tns_finder_filename(candidate: TnsFinderCandidate, index: int) -> str:
+    parsed = urllib.parse.urlparse(candidate.url)
+    name = Path(urllib.parse.unquote(parsed.path)).name
+    if not name or "." not in name:
+        ext = ".jpg" if _image_url_kind(candidate.url) in {"legacy", "sdss"} else ".png"
+        name = f"{clean_filename(candidate.label)}_{index}{ext}"
+    return clean_filename(name)
+
+
+def download_valid_tns_finder(
+    candidate: TnsFinderCandidate,
+    dest: Path,
+    *,
+    timeout: int = 60,
+) -> tuple[bool, str]:
+    """Download a TNS finder candidate only if it validates as a sky/finder image."""
+    if dest.exists():
+        ok, reason = validate_tns_finder_image(dest.read_bytes(), "", candidate)
+        if ok:
+            return True, f"already exists; {reason}"
+
+    try:
+        data, content_type = _request_bytes_with_content_type(candidate.url, timeout=timeout)
+    except Exception as exc:  # noqa: BLE001
+        return False, f"download failed: {exc}"
+
+    ok, reason = validate_tns_finder_image(data, content_type, candidate)
+    if not ok:
+        return False, reason
+    mkdir(dest.parent)
+    dest.write_bytes(data)
+    return True, reason
 
 
 def _ztf_filter_from_fid(fid: Any) -> str:
@@ -1087,9 +1317,9 @@ def run_pipeline(config_path: str | None = None) -> int:
         info(f"TNS page photometry points: {len(page_points)}")
 
         # Finder chart images from page
-        image_urls = find_page_image_urls(html)
+        finder_candidates = find_tns_finder_candidates(html)
     else:
-        image_urls = []
+        finder_candidates = []
 
     if cfg.get("lasair_enabled", True):
         lasair_points = fetch_lasair_photometry(row)
@@ -1143,20 +1373,27 @@ def run_pipeline(config_path: str | None = None) -> int:
 
     # 4a. TNS finder chart
     tns_finder_status = "not attempted"
-    if cfg.get("download_files", True) and image_urls:
+    if cfg.get("download_files", True) and finder_candidates:
         downloaded = False
-        for img_url in image_urls[:3]:
-            fname = img_url.split("/")[-1].split("?")[0]
+        reject_reasons: list[str] = []
+        for index, candidate in enumerate(finder_candidates[:5], start=1):
+            fname = _tns_finder_filename(candidate, index)
             dest = out_dir / f"finder_TNS_{fname}"
-            info(f"Downloading TNS finder: {img_url}")
-            if download_file(img_url, dest, timeout=60):
+            info(f"Downloading TNS finder candidate ({candidate.label}): {candidate.url}")
+            ok, reason = download_valid_tns_finder(candidate, dest, timeout=60)
+            if ok:
                 tns_finder_status = f"downloaded → {dest}"
                 downloaded = True
                 break
+            reject_reasons.append(f"{candidate.label}: {reason}")
+            warn(f"TNS finder candidate rejected: {candidate.url} ({reason})")
         if not downloaded:
-            tns_finder_status = "error: download failed"
-    elif not image_urls:
-        tns_finder_status = "not available: no finder image on TNS page"
+            detail = "; ".join(reject_reasons[:3])
+            tns_finder_status = "not available: no validated TNS finder chart"
+            if detail:
+                tns_finder_status += f" ({detail})"
+    elif not finder_candidates:
+        tns_finder_status = "not available: no validated TNS finder chart"
     else:
         tns_finder_status = "disabled in config"
 
