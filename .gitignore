@@ -35,3 +35,6 @@ build/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# tests
+tests/

@@ -5,6 +5,78 @@ from pathlib import Path
 from .utils import info, mkdir, warn
 
 
+def _compass_vectors(wcs, x0: float, y0: float, length_arcmin: float) -> dict[str, tuple[float, float]] | None:
+    """Return pixel endpoints for local north/east compass arrows."""
+    try:
+        import numpy as np
+        from astropy import units as u
+        from astropy.coordinates import SkyCoord
+
+        base_world = wcs.pixel_to_world(x0, y0)
+        base = SkyCoord(base_world)
+        north = base.directional_offset_by(0 * u.deg, length_arcmin * u.arcmin)
+        east = base.directional_offset_by(90 * u.deg, length_arcmin * u.arcmin)
+        xn, yn = wcs.world_to_pixel(north)
+        xe, ye = wcs.world_to_pixel(east)
+        values = (float(xn), float(yn), float(xe), float(ye))
+        if not all(np.isfinite(values)):
+            return None
+        return {"N": (values[0], values[1]), "E": (values[2], values[3])}
+    except Exception:
+        return None
+
+
+def _draw_compass(ax, wcs, data_shape: tuple[int, ...], fov_arcmin: float) -> bool:
+    if wcs is None or not getattr(wcs, "is_celestial", False):
+        return False
+    ny, nx = data_shape[-2], data_shape[-1]
+    x0 = nx * 0.14
+    y0 = ny * 0.14
+    length_arcmin = min(1.5, max(0.4, fov_arcmin * 0.10))
+    vectors = _compass_vectors(wcs, x0, y0, length_arcmin)
+    if vectors is None:
+        return False
+
+    arrowprops = {
+        "arrowstyle": "-|>",
+        "color": "#ffd84d",
+        "lw": 2.0,
+        "shrinkA": 0,
+        "shrinkB": 0,
+    }
+    label_box = {
+        "boxstyle": "round,pad=0.15",
+        "facecolor": "black",
+        "edgecolor": "none",
+        "alpha": 0.55,
+    }
+    for label, (x1, y1) in vectors.items():
+        dx, dy = x1 - x0, y1 - y0
+        ax.plot(
+            [x0 - dx * 0.35, x0],
+            [y0 - dy * 0.35, y0],
+            color="#ffd84d",
+            lw=2.0,
+            solid_capstyle="round",
+            zorder=6,
+        )
+        ax.annotate("", xy=(x1, y1), xytext=(x0, y0), arrowprops=arrowprops, zorder=6)
+        ax.text(
+            x1 + dx * 0.12,
+            y1 + dy * 0.12,
+            label,
+            color="#ffd84d",
+            ha="center",
+            va="center",
+            fontsize=11,
+            fontweight="bold",
+            bbox=label_box,
+            zorder=7,
+        )
+    ax.plot(x0, y0, "o", color="#ffd84d", markersize=3, zorder=7)
+    return True
+
+
 def generate_finder_chart(
     ra_deg: float,
     dec_deg: float,
@@ -117,6 +189,10 @@ def generate_finder_chart(
         cx, cy = pixels / 2, pixels / 2
         ax.axhline(cy, color="red", lw=1, alpha=0.5)
         ax.axvline(cx, color="red", lw=1, alpha=0.5)
+
+    # ── Local N/E compass ──
+    if not _draw_compass(ax, wcs, data.shape, fov_arcmin):
+        warn("Finder chart compass skipped: celestial WCS unavailable")
 
     # ── Scale bar ──
     bar_arcmin = max(0.5, fov_arcmin / 20)

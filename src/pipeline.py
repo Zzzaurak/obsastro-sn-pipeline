@@ -10,15 +10,18 @@ import sys
 import urllib.parse
 import urllib.request
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .coordinates import deg_to_dms, deg_to_hms, sexagesimal_to_deg
 from .finder import generate_finder_chart
 from .target import Target
+from .time_utils import datetime_to_jd, jd_to_iso
 from .utils import (
     clean_filename,
     download_file,
+    first_float,
     info,
     load_env_file,
     mkdir,
@@ -33,6 +36,16 @@ TNS_CATALOG_URL = f"{TNS_BASE_URL}/system/files/tns_public_objects/tns_public_ob
 TNS_OBJECT_URL = f"{TNS_BASE_URL}/object"
 
 
+@dataclass(frozen=True)
+class PhotometryPoint:
+    jd: float
+    mag: float
+    filter: str = ""
+    source: str = ""
+    date_utc: str = ""
+    err: float | None = None
+
+
 # ═══════════════════════════════════════════════════════════════
 #  Config
 # ═══════════════════════════════════════════════════════════════
@@ -45,7 +58,7 @@ def load_pipeline_config(config_path: str = "configs/sn_parameter.json") -> dict
 
     raw = json.loads(path.read_text(encoding="utf-8"))
     flat: dict[str, Any] = {}
-    for section in ("observing", "tns", "output"):
+    for section in ("observing", "tns", "lasair", "output"):
         for k, v in (raw.get(section) or {}).items():
             flat[k] = v
 
@@ -54,7 +67,10 @@ def load_pipeline_config(config_path: str = "configs/sn_parameter.json") -> dict
         "site_lat": 40.0, "site_lon": 116.3, "site_elevation_m": 50.0,
         "tz_offset": 8.0, "min_alt": 30.0, "min_visible_hours": 0.5,
         "sun_alt_limit": -12.0, "time_step_minutes": 10,
+        "moon_enabled": True, "min_moon_sep": 30.0,
+        "preferred_moon_sep": 45.0, "ignore_moon_below_alt": 0.0,
         "enabled": True, "download_photometry": True, "download_files": True,
+        "lasair_enabled": True,
         "pause_seconds": 6.5, "out_dir": "output",
         "report_file": "sn_report_{date}_{target}.txt",
         "finder_fov_arcmin": 10.0,
@@ -181,11 +197,13 @@ def build_target_from_catalog(row: dict[str, str]) -> Target:
     dmag = row.get("discoverymag", "")
     if dmag:
         try:
+            mag_jd = _date_to_jd(discovery) or 0.0
             target.mag = round(float(dmag), 2)
-            target.mag_filter = row.get("discmagfilter", "").strip()
-            if target.mag_filter == "1":
-                target.mag_filter = row.get("filter", "").strip()
+            target.mag_filter = _catalog_filter(row)
             target.mag_note = discovery
+            target.mag_source = "TNS catalog"
+            target.mag_jd = mag_jd or None
+            target.mag_date_utc = discovery
         except (ValueError, TypeError):
             pass
 
@@ -201,6 +219,91 @@ def build_target_from_catalog(row: dict[str, str]) -> Target:
 
     target.finalize()
     return target
+
+
+def _catalog_filter(row: dict[str, str]) -> str:
+    filt = (row.get("discmagfilter") or "").strip()
+    named = (row.get("filter") or "").strip()
+    if named and (not filt or filt.isdigit()):
+        return named
+    return filt or named
+
+
+def _parse_datetime_utc(value: str) -> dt.datetime | None:
+    value = (value or "").strip()
+    if not value:
+        return None
+    cleaned = value.replace("T", " ").replace("Z", "+00:00")
+    try:
+        parsed = dt.datetime.fromisoformat(cleaned)
+    except ValueError:
+        parsed = None
+        for fmt, width in (
+            ("%Y-%m-%d %H:%M:%S", 19),
+            ("%Y-%m-%d %H:%M", 16),
+            ("%Y-%m-%d", 10),
+        ):
+            try:
+                parsed = dt.datetime.strptime(cleaned[:width], fmt)
+                break
+            except ValueError:
+                continue
+        if parsed is None:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def _date_to_jd(value: str) -> float | None:
+    parsed = _parse_datetime_utc(value)
+    if parsed is None:
+        return None
+    return datetime_to_jd(parsed)
+
+
+def _date_from_jd(jd: float) -> str:
+    try:
+        return jd_to_iso(jd).replace(" ", "T")[:19]
+    except Exception:
+        return ""
+
+
+def photometry_from_catalog_row(row: dict[str, str]) -> PhotometryPoint | None:
+    mag = first_float(row.get("discoverymag"))
+    if mag is None:
+        return None
+    date_utc = (row.get("discoverydate") or row.get("discovery_date") or "").strip()
+    jd = _date_to_jd(date_utc) or 0.0
+    if not date_utc and jd:
+        date_utc = _date_from_jd(jd)
+    return PhotometryPoint(
+        jd=jd,
+        mag=mag,
+        filter=_catalog_filter(row),
+        source="TNS catalog",
+        date_utc=date_utc,
+    )
+
+
+def apply_photometry_point(target: Target, point: PhotometryPoint) -> None:
+    target.mag = round(point.mag, 2)
+    target.mag_filter = point.filter
+    target.mag_note = point.date_utc
+    target.mag_source = point.source
+    target.mag_jd = point.jd if point.jd > 0 else None
+    target.mag_date_utc = point.date_utc or (_date_from_jd(point.jd) if point.jd > 0 else "")
+    target.mag_err = point.err
+
+
+def select_latest_photometry(points: list[PhotometryPoint]) -> PhotometryPoint | None:
+    valid = [
+        point for point in points
+        if point.mag is not None and math.isfinite(point.mag) and point.jd > 0
+    ]
+    if not valid:
+        return None
+    return max(valid, key=lambda point: point.jd)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -239,13 +342,10 @@ def _parse_tables(html: str) -> list[list[list[str]]]:
     return tables
 
 
-def update_target_photometry_from_page(target: Target, html: str) -> None:
-    """Scrape the TNS object page for a more recent magnitude."""
+def extract_tns_page_photometry(html: str) -> list[PhotometryPoint]:
+    """Scrape TNS object page detections into timestamped photometry points."""
     tables = _parse_tables(html)
-    best_jd = -1.0
-    best_mag = None
-    best_filter = ""
-    best_date = ""
+    points: list[PhotometryPoint] = []
 
     for rows in tables:
         if not rows:
@@ -287,16 +387,27 @@ def update_target_photometry_from_page(target: Target, html: str) -> None:
                     jd = float(row[jd_col])
                 except (ValueError, TypeError):
                     pass
-            if jd > best_jd:
-                best_jd = jd
-                best_mag = mag
-                best_filter = row[filt_col] if 0 <= filt_col < len(row) else ""
-                best_date = row[date_col] if 0 <= date_col < len(row) else ""
+            date_utc = row[date_col] if 0 <= date_col < len(row) else ""
+            if jd <= 0:
+                jd = _date_to_jd(date_utc) or 0.0
+            if not date_utc and jd > 0:
+                date_utc = _date_from_jd(jd)
+            points.append(PhotometryPoint(
+                jd=jd,
+                mag=mag,
+                filter=row[filt_col] if 0 <= filt_col < len(row) else "",
+                source="TNS",
+                date_utc=date_utc,
+            ))
 
-    if best_mag is not None:
-        target.mag = round(best_mag, 2)
-        target.mag_filter = best_filter
-        target.mag_note = best_date
+    return points
+
+
+def update_target_photometry_from_page(target: Target, html: str) -> None:
+    """Scrape the TNS object page and apply its latest detection."""
+    latest = select_latest_photometry(extract_tns_page_photometry(html))
+    if latest is not None:
+        apply_photometry_point(target, latest)
 
 
 def find_page_image_urls(html: str) -> list[str]:
@@ -327,6 +438,80 @@ def find_page_image_urls(html: str) -> list[str]:
     return urls
 
 
+def _ztf_filter_from_fid(fid: Any) -> str:
+    try:
+        fid_int = int(fid)
+    except (TypeError, ValueError):
+        return ""
+    if fid_int == 1:
+        return "g-ZTF"
+    if fid_int == 2:
+        return "r-ZTF"
+    return ""
+
+
+def extract_lasair_photometry(obj: dict[str, Any]) -> list[PhotometryPoint]:
+    """Extract valid Lasair/ZTF detections and positive-flux forced points."""
+    points: list[PhotometryPoint] = []
+
+    for cand in obj.get("candidates") or []:
+        mag = first_float(cand.get("magpsf"))
+        if mag is None:
+            continue
+        jd = first_float(cand.get("jd")) or 0.0
+        if jd <= 0 and cand.get("mjd") is not None:
+            mjd = first_float(cand.get("mjd"))
+            jd = (mjd + 2400000.5) if mjd is not None else 0.0
+        if jd <= 0:
+            continue
+        points.append(PhotometryPoint(
+            jd=jd,
+            mag=mag,
+            filter=_ztf_filter_from_fid(cand.get("fid")),
+            source="Lasair/ZTF",
+            date_utc=_date_from_jd(jd),
+            err=first_float(cand.get("sigmapsf")),
+        ))
+
+    for forced in obj.get("forcedphot") or []:
+        flux = first_float(forced.get("forcediffimflux"))
+        zp = first_float(forced.get("magzpsci"))
+        jd = first_float(forced.get("jd")) or 0.0
+        if flux is None or zp is None or flux <= 0 or jd <= 0:
+            continue
+        try:
+            mag = zp - 2.5 * math.log10(flux)
+        except (ValueError, TypeError):
+            continue
+        err = None
+        flux_unc = first_float(forced.get("forcediffimfluxunc"))
+        if flux_unc is not None and flux_unc > 0:
+            err = 2.5 * flux_unc / flux
+        points.append(PhotometryPoint(
+            jd=jd,
+            mag=mag,
+            filter=_ztf_filter_from_fid(forced.get("fid")),
+            source="Lasair/ZTF forced",
+            date_utc=_date_from_jd(jd),
+            err=err,
+        ))
+
+    return points
+
+
+def fetch_lasair_photometry(row: dict[str, str]) -> list[PhotometryPoint]:
+    from .lasair import fetch_lasair_object, get_ztf_id_from_catalog_row
+
+    ztf_id = get_ztf_id_from_catalog_row(row)
+    if not ztf_id:
+        warn(f"No ZTF ID found for Lasair lookup (internal_names={row.get('internal_names', '')})")
+        return []
+    obj = fetch_lasair_object(ztf_id)
+    if not obj:
+        return []
+    return extract_lasair_photometry(obj)
+
+
 # ═══════════════════════════════════════════════════════════════
 #  Observability
 # ═══════════════════════════════════════════════════════════════
@@ -338,11 +523,24 @@ def compute_observing_window(
     site_lat: float, site_lon: float, site_elevation_m: float,
     tz_offset: float, time_step_minutes: int,
     sun_alt_limit: float, min_alt: float,
+    moon_enabled: bool = True,
+    min_moon_sep: float = 30.0,
+    preferred_moon_sep: float = 45.0,
+    ignore_moon_below_alt: float = 0.0,
 ) -> dict[str, Any]:
     ra = target.ra_deg
     dec = target.dec_deg
     if ra is None or dec is None:
-        return _empty_window()
+        return _empty_window(
+            reason="missing coordinates",
+            time_step_minutes=time_step_minutes,
+            min_alt=min_alt,
+            sun_alt_limit=sun_alt_limit,
+            moon_enabled=moon_enabled,
+            min_moon_sep=min_moon_sep,
+            preferred_moon_sep=preferred_moon_sep,
+            ignore_moon_below_alt=ignore_moon_below_alt,
+        )
 
     local_date = dt.date.fromisoformat(date_str)
     tz = dt.timezone(dt.timedelta(hours=tz_offset))
@@ -360,12 +558,18 @@ def compute_observing_window(
 
     alts: list[float] = []
     sun_alts: list[float] = []
+    moon_alts: list[float] | None = None
+    moon_seps: list[float] | None = None
+    moon_illums: list[float] | None = None
+    moon_available = False
+    moon_warning = ""
 
     try:
         from astropy import units as u
-        from astropy.coordinates import AltAz, EarthLocation, SkyCoord, get_sun
+        from astropy.coordinates import AltAz, EarthLocation, SkyCoord, get_body, get_sun
         from astropy.time import Time
         from astropy.utils import iers
+        import numpy as np
 
         iers.conf.auto_download = False
         times = Time(times_dt)
@@ -373,11 +577,27 @@ def compute_observing_window(
             lat=site_lat * u.deg, lon=site_lon * u.deg, height=site_elevation_m * u.m,
         )
         frame = AltAz(obstime=times, location=location)
-        sun_alts = get_sun(times).transform_to(frame).alt.deg.tolist()
+        sun_coord = get_sun(times)
+        sun_alts = sun_coord.transform_to(frame).alt.deg.tolist()
         coord = SkyCoord(ra=ra * u.deg, dec=dec * u.deg)
-        alts = coord.transform_to(frame).alt.deg.tolist()
-    except Exception:
-        from .time_utils import altitude_deg, datetime_to_jd, sun_ra_dec_approx
+        target_altaz = coord.transform_to(frame)
+        alts = target_altaz.alt.deg.tolist()
+
+        if moon_enabled:
+            try:
+                moon_coord = get_body("moon", times, location=location)
+                moon_altaz = moon_coord.transform_to(frame)
+                moon_alts = moon_altaz.alt.deg.tolist()
+                moon_seps = target_altaz.separation(moon_altaz).deg.tolist()
+                moon_geo = get_body("moon", times)
+                elongation = moon_geo.separation(sun_coord).deg
+                moon_illums = ((1.0 - np.cos(np.deg2rad(elongation))) / 2.0 * 100.0).tolist()
+                moon_available = True
+            except Exception as exc:  # noqa: BLE001
+                moon_warning = f"Moon unavailable ({exc}); moon constraint not applied"
+                warn(moon_warning)
+    except Exception as exc:  # noqa: BLE001
+        from .time_utils import altitude_deg, sun_ra_dec_approx
         jds = [datetime_to_jd(t) for t in times_dt]
         sun_data = [sun_ra_dec_approx(jd) for jd in jds]
         sun_alts = [
@@ -385,23 +605,92 @@ def compute_observing_window(
             for (sra, sdec), jd in zip(sun_data, jds)
         ]
         alts = [altitude_deg(ra, dec, jd, site_lat, site_lon) for jd in jds]
+        if moon_enabled:
+            moon_warning = f"Astropy unavailable ({exc}); moon constraint not applied"
+            warn(moon_warning)
 
+    return summarize_observing_samples(
+        times_dt=times_dt,
+        tz=tz,
+        alts=alts,
+        sun_alts=sun_alts,
+        time_step_minutes=time_step_minutes,
+        sun_alt_limit=sun_alt_limit,
+        min_alt=min_alt,
+        moon_enabled=moon_enabled,
+        min_moon_sep=min_moon_sep,
+        preferred_moon_sep=preferred_moon_sep,
+        ignore_moon_below_alt=ignore_moon_below_alt,
+        moon_available=moon_available,
+        moon_alts=moon_alts,
+        moon_seps=moon_seps,
+        moon_illums=moon_illums,
+        moon_warning=moon_warning,
+    )
+
+
+def summarize_observing_samples(
+    *,
+    times_dt: list[dt.datetime],
+    tz: dt.tzinfo,
+    alts: list[float],
+    sun_alts: list[float],
+    time_step_minutes: int,
+    sun_alt_limit: float,
+    min_alt: float,
+    moon_enabled: bool,
+    min_moon_sep: float,
+    preferred_moon_sep: float,
+    ignore_moon_below_alt: float,
+    moon_available: bool = False,
+    moon_alts: list[float] | None = None,
+    moon_seps: list[float] | None = None,
+    moon_illums: list[float] | None = None,
+    moon_warning: str = "",
+) -> dict[str, Any]:
     dark_mask = [sa < sun_alt_limit for sa in sun_alts]
-    visible_mask = [a > min_alt and d for a, d in zip(alts, dark_mask)]
+    visible_mask: list[bool] = []
+    for i, (alt, dark) in enumerate(zip(alts, dark_mask)):
+        moon_ok = _moon_sample_ok(
+            moon_enabled=moon_enabled,
+            moon_available=moon_available,
+            moon_alt=moon_alts[i] if moon_alts is not None else None,
+            moon_sep=moon_seps[i] if moon_seps is not None else None,
+            min_moon_sep=min_moon_sep,
+            ignore_moon_below_alt=ignore_moon_below_alt,
+        )
+        visible_mask.append(alt > min_alt and dark and moon_ok)
 
-    if not any(visible_mask):
-        return _empty_window()
+    runs = _true_runs(visible_mask)
+    if not runs:
+        return _empty_window(
+            reason="no samples meet altitude, dark-time, and moon constraints",
+            time_step_minutes=time_step_minutes,
+            min_alt=min_alt,
+            sun_alt_limit=sun_alt_limit,
+            moon_enabled=moon_enabled,
+            min_moon_sep=min_moon_sep,
+            preferred_moon_sep=preferred_moon_sep,
+            ignore_moon_below_alt=ignore_moon_below_alt,
+            moon_available=moon_available,
+            moon_warning=moon_warning,
+        )
 
-    first_idx = next(i for i, v in enumerate(visible_mask) if v)
-    last_idx = next(i for i in range(len(visible_mask) - 1, -1, -1) if visible_mask[i])
+    first_idx, last_idx = max(
+        runs,
+        key=lambda run: (run[1] - run[0] + 1, max(alts[i] for i in range(run[0], run[1] + 1))),
+    )
+    best_idx = max(range(first_idx, last_idx + 1), key=lambda i: alts[i])
 
     start_lt = times_dt[first_idx].astimezone(tz)
     end_lt = times_dt[last_idx].astimezone(tz)
-    best_idx = max(range(len(alts)), key=lambda i: alts[i])
     max_alt_time_lt = times_dt[best_idx].astimezone(tz)
 
     duration_h = round((last_idx - first_idx + 1) * time_step_minutes / 60.0, 2)
     visible_h = round(sum(1 for v in visible_mask if v) * time_step_minutes / 60.0, 2)
+    moon_alt = moon_alts[best_idx] if moon_alts is not None else None
+    moon_sep = moon_seps[best_idx] if moon_seps is not None else None
+    moon_illum = moon_illums[best_idx] if moon_illums is not None else None
 
     return {
         "window_start": start_lt.strftime("%H:%M"),
@@ -411,15 +700,119 @@ def compute_observing_window(
         "duration_hours": duration_h,
         "visible_hours": visible_h,
         "observable": True,
+        "time_step_minutes": time_step_minutes,
+        "min_alt": min_alt,
+        "sun_alt_limit": sun_alt_limit,
+        "moon_enabled": moon_enabled,
+        "min_moon_sep": min_moon_sep,
+        "preferred_moon_sep": preferred_moon_sep,
+        "ignore_moon_below_alt": ignore_moon_below_alt,
+        "moon_available": moon_available,
+        "moon_warning": moon_warning,
+        "moon_alt": round(float(moon_alt), 1) if moon_alt is not None else None,
+        "moon_sep": round(float(moon_sep), 1) if moon_sep is not None else None,
+        "moon_illum": round(float(moon_illum), 0) if moon_illum is not None else None,
+        "moon_status": _moon_status(
+            moon_enabled=moon_enabled,
+            moon_available=moon_available,
+            moon_alt=moon_alt,
+            moon_sep=moon_sep,
+            min_moon_sep=min_moon_sep,
+            preferred_moon_sep=preferred_moon_sep,
+            ignore_moon_below_alt=ignore_moon_below_alt,
+        ),
     }
 
 
-def _empty_window() -> dict[str, Any]:
+def _moon_sample_ok(
+    *,
+    moon_enabled: bool,
+    moon_available: bool,
+    moon_alt: float | None,
+    moon_sep: float | None,
+    min_moon_sep: float,
+    ignore_moon_below_alt: float,
+) -> bool:
+    if not moon_enabled or not moon_available:
+        return True
+    if moon_alt is None or moon_sep is None:
+        return True
+    if moon_alt <= ignore_moon_below_alt:
+        return True
+    return moon_sep >= min_moon_sep
+
+
+def _moon_status(
+    *,
+    moon_enabled: bool,
+    moon_available: bool,
+    moon_alt: float | None,
+    moon_sep: float | None,
+    min_moon_sep: float,
+    preferred_moon_sep: float,
+    ignore_moon_below_alt: float,
+) -> str:
+    if not moon_enabled:
+        return "disabled"
+    if not moon_available:
+        return "unavailable"
+    if moon_alt is None or moon_sep is None:
+        return "unavailable"
+    if moon_alt <= ignore_moon_below_alt:
+        return "OK (Moon below limit)"
+    if moon_sep >= preferred_moon_sep:
+        return "OK"
+    if moon_sep >= min_moon_sep:
+        return "Marginal"
+    return "Too close"
+
+
+def _true_runs(mask: list[bool]) -> list[tuple[int, int]]:
+    runs: list[tuple[int, int]] = []
+    start = None
+    for i, value in enumerate(mask):
+        if value and start is None:
+            start = i
+        elif not value and start is not None:
+            runs.append((start, i - 1))
+            start = None
+    if start is not None:
+        runs.append((start, len(mask) - 1))
+    return runs
+
+
+def _empty_window(
+    *,
+    reason: str = "",
+    time_step_minutes: int | None = None,
+    min_alt: float | None = None,
+    sun_alt_limit: float | None = None,
+    moon_enabled: bool = True,
+    min_moon_sep: float = 30.0,
+    preferred_moon_sep: float = 45.0,
+    ignore_moon_below_alt: float = 0.0,
+    moon_available: bool = False,
+    moon_warning: str = "",
+) -> dict[str, Any]:
     return {
         "window_start": "", "window_end": "",
         "max_alt": None, "max_alt_time": "",
         "duration_hours": 0.0, "visible_hours": 0.0,
         "observable": False,
+        "reason": reason,
+        "time_step_minutes": time_step_minutes,
+        "min_alt": min_alt,
+        "sun_alt_limit": sun_alt_limit,
+        "moon_enabled": moon_enabled,
+        "min_moon_sep": min_moon_sep,
+        "preferred_moon_sep": preferred_moon_sep,
+        "ignore_moon_below_alt": ignore_moon_below_alt,
+        "moon_available": moon_available,
+        "moon_warning": moon_warning,
+        "moon_alt": None,
+        "moon_sep": None,
+        "moon_illum": None,
+        "moon_status": "unavailable" if moon_enabled else "disabled",
     }
 
 
@@ -471,27 +864,34 @@ def format_report(
         parts = [f"{target.mag:.1f}"]
         if target.mag_filter:
             parts.append(target.mag_filter)
-        if target.mag_note:
-            parts.append(f"({_format_date_short(target.mag_note)})")
+        mag_note = _format_mag_note(target)
+        if mag_note:
+            parts.append(f"({mag_note})")
         mag_line = " ".join(parts)
 
+    criteria_lines = _format_window_criteria(window)
     if window["observable"]:
         start_str = window["window_start"]
         end_str = window["window_end"]
         if end_str < start_str:
             end_str = f"{end_str} (+1d)"
-        dur_h = int(window["duration_hours"])
-        dur_m = int((window["duration_hours"] - dur_h) * 60)
+        dur_total_min = int(round(window["duration_hours"] * 60))
+        dur_h, dur_m = divmod(dur_total_min, 60)
         dur_str = f"{dur_h}h {dur_m:02d}m" if dur_h > 0 else f"{dur_m}m"
         max_alt_str = f"{window['max_alt']:.1f} deg at {window['max_alt_time']} {tz_label}"
-        window_lines = [
+        window_lines = criteria_lines + [
             f"  Start:         {start_str} {tz_label}",
             f"  End:           {end_str} {tz_label}",
             f"  Duration:      {dur_str}",
             f"  Max Altitude:  {max_alt_str}",
+            f"  Moon:          {_format_moon_line(window)}",
         ]
     else:
-        window_lines = ["  Not observable on this night (below altitude limit during dark time)"]
+        reason = window.get("reason") or "below altitude limit during dark time"
+        window_lines = criteria_lines + [f"  Not observable on this night ({reason})"]
+        moon_line = _format_moon_line(window)
+        if moon_line:
+            window_lines.append(f"  Moon:          {moon_line}")
 
     extra_lines = []
     if target.host:
@@ -573,6 +973,64 @@ def _format_date_short(date_str: str) -> str:
     return date_str
 
 
+def _format_date_for_mag(date_str: str) -> str:
+    parsed = _parse_datetime_utc(date_str)
+    if parsed is not None:
+        return parsed.strftime("%Y-%m-%d")
+    return _format_date_short(date_str)
+
+
+def _format_mag_note(target: Target) -> str:
+    parts = []
+    date_text = target.mag_date_utc or target.mag_note
+    if date_text:
+        parts.append(_format_date_for_mag(date_text))
+    if target.mag_source:
+        parts.append(target.mag_source)
+    return ", ".join(part for part in parts if part)
+
+
+def _format_window_criteria(window: dict[str, Any]) -> list[str]:
+    min_alt = window.get("min_alt")
+    sun_alt_limit = window.get("sun_alt_limit")
+    time_step = window.get("time_step_minutes")
+    criteria = []
+    if min_alt is not None and sun_alt_limit is not None:
+        text = f"alt > {float(min_alt):.1f} deg, Sun < {float(sun_alt_limit):.1f} deg"
+        if window.get("moon_enabled"):
+            text += (
+                f", Moon sep >= {float(window.get('min_moon_sep', 30.0)):.1f} deg"
+                f" when Moon alt > {float(window.get('ignore_moon_below_alt', 0.0)):.1f} deg"
+            )
+        criteria.append(f"  Criteria:      {text}")
+    if time_step is not None:
+        criteria.append(f"  Time Step:     {int(time_step)} min sampling")
+    if window.get("moon_warning"):
+        criteria.append(f"  Warning:       {window['moon_warning']}")
+    return criteria
+
+
+def _format_moon_line(window: dict[str, Any]) -> str:
+    if not window.get("moon_enabled", True):
+        return "disabled"
+    if not window.get("moon_available", False):
+        return "unavailable (moon constraint not applied)"
+    pieces = []
+    moon_sep = window.get("moon_sep")
+    moon_alt = window.get("moon_alt")
+    moon_illum = window.get("moon_illum")
+    if moon_sep is not None:
+        pieces.append(f"sep {float(moon_sep):.1f} deg")
+    if moon_alt is not None:
+        pieces.append(f"alt {float(moon_alt):.1f} deg")
+    if moon_illum is not None:
+        pieces.append(f"illum {float(moon_illum):.0f}%")
+    status = window.get("moon_status")
+    if status:
+        pieces.append(str(status))
+    return ", ".join(pieces)
+
+
 # ═══════════════════════════════════════════════════════════════
 #  Pipeline
 # ═══════════════════════════════════════════════════════════════
@@ -610,21 +1068,44 @@ def run_pipeline(config_path: str | None = None) -> int:
         return 1
 
     target = build_target_from_catalog(row)
+    from .lasair import get_ztf_id_from_catalog_row
+    target.ztf_id = get_ztf_id_from_catalog_row(row) or ""
     info(f"Catalog data: {target.name}  type={target.object_type}  "
          f"ra={target.ra_hms}  dec={target.dec_dms}  mag={target.mag}")
 
-    # ── Step 2: Scrape object page for latest photometry + finder chart ──
+    # ── Step 2: Collect latest photometry + finder chart links ──
+    photometry_points: list[PhotometryPoint] = []
+    catalog_point = photometry_from_catalog_row(row)
+    if catalog_point is not None:
+        photometry_points.append(catalog_point)
+
     tns_name = row.get("name", "") or normalize_tns_name(target_name)
     html = fetch_tns_object_page(tns_name)
     if html:
-        update_target_photometry_from_page(target, html)
-        if target.mag is not None:
-            info(f"Updated mag from page: {target.mag} {target.mag_filter} ({target.mag_note})")
+        page_points = extract_tns_page_photometry(html)
+        photometry_points.extend(page_points)
+        info(f"TNS page photometry points: {len(page_points)}")
 
         # Finder chart images from page
         image_urls = find_page_image_urls(html)
     else:
         image_urls = []
+
+    if cfg.get("lasair_enabled", True):
+        lasair_points = fetch_lasair_photometry(row)
+        photometry_points.extend(lasair_points)
+        info(f"Lasair photometry points: {len(lasair_points)}")
+    else:
+        info("Lasair photometry disabled in config")
+
+    latest_photometry = select_latest_photometry(photometry_points)
+    if latest_photometry is not None:
+        apply_photometry_point(target, latest_photometry)
+        info(
+            "Latest mag selected: "
+            f"{target.mag} {target.mag_filter} "
+            f"({target.mag_date_utc or target.mag_note}, {target.mag_source})"
+        )
 
     # ── Step 3: Compute observability ──
     window = compute_observing_window(
@@ -636,7 +1117,17 @@ def run_pipeline(config_path: str | None = None) -> int:
         time_step_minutes=int(cfg["time_step_minutes"]),
         sun_alt_limit=float(cfg["sun_alt_limit"]),
         min_alt=float(cfg["min_alt"]),
+        moon_enabled=bool(cfg.get("moon_enabled", True)),
+        min_moon_sep=float(cfg.get("min_moon_sep", 30.0)),
+        preferred_moon_sep=float(cfg.get("preferred_moon_sep", 45.0)),
+        ignore_moon_below_alt=float(cfg.get("ignore_moon_below_alt", 0.0)),
     )
+    target.max_alt_deg = window["max_alt"]
+    target.visible_hours = window["visible_hours"]
+    target.moon_alt_at_best = window.get("moon_alt")
+    target.moon_sep_at_best = window.get("moon_sep")
+    target.moon_illum_at_best = window.get("moon_illum")
+    target.moon_status_at_best = window.get("moon_status", "")
     if window["observable"]:
         info(f"Window: {window['window_start']}–{window['window_end']} "
              f"(max alt {window['max_alt']:.1f}°)")
@@ -678,6 +1169,7 @@ def run_pipeline(config_path: str | None = None) -> int:
             target_name=target.name,
             output_dir=out_dir,
             fov_arcmin=float(cfg.get("finder_fov_arcmin", 10.0)),
+            overwrite=True,
         )
         if chart_path:
             astroquery_finder_status = f"generated → {chart_path}"

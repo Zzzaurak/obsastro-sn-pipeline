@@ -23,6 +23,10 @@ class Target:
     mag: float | None = None
     mag_filter: str = ""
     mag_note: str = ""
+    mag_source: str = ""
+    mag_jd: float | None = None
+    mag_date_utc: str = ""
+    mag_err: float | None = None
     peakmag: float | None = None
     peak_filter: str = ""
     peak_jd: float | None = None
@@ -41,6 +45,9 @@ class Target:
     best_time_local: str = ""
     sun_alt_at_best: float | None = None
     moon_sep_at_best: float | None = None
+    moon_alt_at_best: float | None = None
+    moon_illum_at_best: float | None = None
+    moon_status_at_best: str = ""
     priority_score: float | None = None
     notes: list[str] = field(default_factory=list)
 
@@ -87,6 +94,10 @@ class Target:
             "mag": self.mag,
             "mag_filter": self.mag_filter,
             "mag_note": self.mag_note,
+            "mag_source": self.mag_source,
+            "mag_jd": self.mag_jd,
+            "mag_date_utc": self.mag_date_utc,
+            "mag_err": self.mag_err,
             "peakmag": self.peakmag,
             "peak_filter": self.peak_filter,
             "peak_jd": self.peak_jd,
@@ -101,6 +112,9 @@ class Target:
             "best_time_local": self.best_time_local,
             "sun_alt_at_best": self.sun_alt_at_best,
             "moon_sep_at_best": self.moon_sep_at_best,
+            "moon_alt_at_best": self.moon_alt_at_best,
+            "moon_illum_at_best": self.moon_illum_at_best,
+            "moon_status_at_best": self.moon_status_at_best,
             "priority_score": self.priority_score,
             "ztf_lc_png_url": self.ztf_lc_png_url,
             "ztf_finder_png_url": self.ztf_finder_png_url,
@@ -121,6 +135,8 @@ def merge_target(base: Target, incoming: Target) -> Target:
         "ra_hms",
         "dec_dms",
         "mag_filter",
+        "mag_source",
+        "mag_date_utc",
         "peak_filter",
         "peak_date_utc",
         "redshift",
@@ -142,6 +158,10 @@ def merge_target(base: Target, incoming: Target) -> Target:
         base.peakmag = incoming.peakmag
     if base.peak_jd is None and incoming.peak_jd is not None:
         base.peak_jd = incoming.peak_jd
+    if base.mag_jd is None and incoming.mag_jd is not None:
+        base.mag_jd = incoming.mag_jd
+    if base.mag_err is None and incoming.mag_err is not None:
+        base.mag_err = incoming.mag_err
     base.update_mag(incoming.mag, incoming.mag_note or "merged", incoming.mag_filter)
     base.notes.extend(n for n in incoming.notes if n not in base.notes)
     if base.name == "unknown" and incoming.name != "unknown":

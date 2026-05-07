@@ -1,6 +1,6 @@
 {
   "observing": {
-    "target": "SN2026kie",
+    "target": "SN2026fvx",
     "date": "2026-05-08",
     "site_lat": 40.0,
     "site_lon": 116.3,
@@ -9,7 +9,11 @@
     "min_alt": 30.0,
     "min_visible_hours": 0.5,
     "sun_alt_limit": -12.0,
-    "time_step_minutes": 10
+    "time_step_minutes": 10,
+    "moon_enabled": true,
+    "min_moon_sep": 30.0,
+    "preferred_moon_sep": 45.0,
+    "ignore_moon_below_alt": 0.0
   },
   "tns": {
     "enabled": true,
