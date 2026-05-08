@@ -228,7 +228,7 @@ def generate_finder_chart(
     except Exception:
         vmin, vmax = np.percentile(data[np.isfinite(data)], [5, 95])
 
-    ax.imshow(data, cmap="gray_r", vmin=vmin, vmax=vmax, origin="lower", interpolation="nearest")
+    ax.imshow(data, cmap="gray", vmin=vmin, vmax=vmax, origin="lower", interpolation="nearest")
 
     # ── Arrow pointing to target ──
     if wcs is not None and wcs.is_celestial:
