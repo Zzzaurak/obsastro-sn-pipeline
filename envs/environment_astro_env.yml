@@ -14,4 +14,6 @@ dependencies:
     - astroquery>=0.4
     - tensorflow<2.16
     - astrodash
+    - NGSF==0.0.2
+    - quantities<0.16  # keep numpy==1.23.5 compatible for astrodash/tensorflow
     - PyQt5
