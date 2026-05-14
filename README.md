@@ -234,3 +234,53 @@ notebook 内切换目标只需修改 `TARGET` 变量。
 - `output/` 和 `data/` 已被 `.gitignore` 排除
 - TNS 公共目录约 100MB，首次运行需要下载
 - 观测窗口计算使用 astropy（自动退化为纯 Python 计算）
+
+# SN 光谱数据分析进展总结
+
+本文整理当前已经有光谱数据后完成的分析，以及此前建议的 9 类后续可做分析。状态含义：
+
+- `[已做]`：已有可运行 notebook 或已形成自动化诊断输出。
+- `[部分]`：已有框架或示例，但还需要按目标手动调参、补充物理约束或改成批处理。
+- `[待做]`：当前还没有专门 notebook。
+
+## 已经完成的基础工作
+
+| 状态 | 工作 | 目的 | 对应 notebook |
+|---|---|---|---|
+| `[已做]` | 检查 `.fits` 文件内容 | 识别学长给的数据是 1D 光谱、2D 光谱图像还是表格，并查看 header、HDU、波长轴和数据维度 | [`fits_inspection.ipynb`](fits_inspection.ipynb) |
+| `[已做]` | 2D 光谱的基础提取流程 | 从长缝二维光谱中做背景扣除、抽取 1D 光谱、建立波长解，并用强发射线估计红移 | [`spectral_reduction.ipynb`](spectral_reduction.ipynb) |
+| `[已做]` | 读取和可视化 1D 光谱 | 读取 `data/<target>/` 或 pipeline 产出的光谱文件，画出观测谱 | [`spectral_processing.ipynb`](spectral_processing.ipynb), [`spectral_superfit.ipynb`](spectral_superfit.ipynb), [`spectral_diagnostics.ipynb`](spectral_diagnostics.ipynb) |
+| `[已做]` | DASH 分类、红移和模板匹配 | 用 Astrodash 给出 SN 类型、模板相位、红移和最佳模板叠加图 | [`spectral_processing.ipynb`](spectral_processing.ipynb) |
+| `[已做]` | Superfit/NGSF 模板拟合 | 用 Superfit 作为 DASH 之外的独立模板拟合结果，交叉检查类型、红移和相位 | [`spectral_superfit.ipynb`](spectral_superfit.ipynb) |
+| `[已做]` | 抛射物速度估算 | 根据 SN 类型选择典型谱线，在去红移光谱中找吸收谷并计算膨胀速度 | [`spectral_processing.ipynb`](spectral_processing.ipynb), [`spectral_superfit.ipynb`](spectral_superfit.ipynb), [`spectral_diagnostics.ipynb`](spectral_diagnostics.ipynb) |
+| `[已做]` | 连续谱归一化 | 用 `specutils` 和 Chebyshev 多项式拟合经验连续谱，再用原始光谱除以连续谱 | [`spectral_normalization.ipynb`](spectral_normalization.ipynb) |
+| `[部分]` | TARDIS 辐射转移模拟 | 根据类型、红移、相位、速度和亮度生成 TARDIS 配置，模拟光谱并和观测谱比较 | [`tardis_simulation.ipynb`](tardis_simulation.ipynb) |
+
+## 此前建议的 9 类后续分析
+
+| # | 状态 | 可做分析 | 当前实现 | 对应 notebook |
+|---:|---|---|---|---|
+| 1 | `[已做]` | 多历元光谱演化 | 批量读取 `data/SN*/SN*_bfosc_*.fits`，按目标分组画 rest-frame 多历元光谱序列；可看谱线形状、连续谱颜色和演化趋势 | [`spectral_diagnostics.ipynb`](spectral_diagnostics.ipynb) |
+| 2 | `[已做]` | 多谱线速度演化 | 对 Ia/II/Ib/Ic 常用谱线自动选择搜索窗口，测吸收谷蓝移速度，并画速度随时间变化 | [`spectral_diagnostics.ipynb`](spectral_diagnostics.ipynb) |
+| 3 | `[已做]` | 谱线强度：pseudo-equivalent width | 对吸收线局部拟合线性连续谱，计算 pEW；适合比较 Si II、Hα、He I、Ca II 等线强演化 | [`spectral_diagnostics.ipynb`](spectral_diagnostics.ipynb) |
+| 4 | `[已做]` | 谱线宽度和线深 | 自动输出 FWHM、线深、吸收谷位置，用于判断谱线是否变宽、是否有高速成分或混合特征 | [`spectral_diagnostics.ipynb`](spectral_diagnostics.ipynb) |
+| 5 | `[已做]` | 连续谱黑体温度粗估 | 用 Planck 黑体函数 `A * B_lambda(T)` 拟合连续谱，输出颜色温度 `T_bb`；当前结果应视为粗略温度，不是严格 photospheric temperature | [`spectral_diagnostics.ipynb`](spectral_diagnostics.ipynb) |
+| 6 | `[已做]` | 连续谱归一化与谱线测量准备 | 用经验多项式连续谱做归一化，便于后续量等效宽度、谱线深度和局部轮廓 | [`spectral_normalization.ipynb`](spectral_normalization.ipynb) |
+| 7 | `[已做]` | 分类/红移/相位的交叉验证 | 用 DASH 和 Superfit 两套独立模板方法比较 SN 类型、红移和模板相位；若两者冲突，需要人工检查谱线识别和宿主红移 | [`spectral_processing.ipynb`](spectral_processing.ipynb), [`spectral_superfit.ipynb`](spectral_superfit.ipynb) |
+| 8 | `[部分]` | 物理模型拟合 | TARDIS 可以把观测谱和辐射转移模型比较，调节 luminosity、epoch、velocity range、abundance、plasma 设置；目前是单目标手动调参框架，还不是自动拟合器 | [`tardis_simulation.ipynb`](tardis_simulation.ipynb) |
+| 9 | `[待做]` | 宿主星系/消光/环境诊断 | 可进一步做窄发射线红移、Balmer decrement 消光、Na I D 吸收、宿主污染扣除、Hα/[O III]/[N II] 线强等；目前没有专门 notebook，只在基础 reduction 中示范过用 Hα 估红移 | 可新建 `host_environment_diagnostics.ipynb` |
+
+## 当前自动输出
+
+[`spectral_diagnostics.ipynb`](spectral_diagnostics.ipynb) 会把批量诊断结果写到：
+
+- `../output/spectral_diagnostics/spectra_summary.csv`
+- `../output/spectral_diagnostics/line_diagnostics.csv`
+- `../output/spectral_diagnostics/blackbody_temperature.csv`
+
+这些表格适合直接放进报告或继续画图。需要注意的是，自动谱线测量依赖目标类型、红移和搜索窗口；正式引用速度、pEW 或 FWHM 前，建议用 notebook 中的单条谱线检查图逐个确认吸收谷没有被噪声、天光残差或线混合误判。
+
+## 还值得补的 notebook
+
+优先级最高的是 `host_environment_diagnostics.ipynb`：它可以把宿主星系窄线、红移、消光和可能的宿主污染系统化处理。这个方向和现有 SN 本体诊断互补，也能帮助判断分类、速度和黑体温度是否受到宿主背景影响。
+
