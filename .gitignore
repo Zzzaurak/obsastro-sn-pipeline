@@ -38,3 +38,8 @@ build/
 
 # tests
 tests/
+
+paper/
+P2Rp*
+ppt/*
+!ppt/*.tex
