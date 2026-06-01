@@ -2,16 +2,40 @@
 
 ## Project Overview
 
-Supernova observing pipeline that queries TNS (Transient Name Server) for target data, computes nightly observability windows, and generates observing reports with finder charts.
+Supernova observing and sparse-spectrum analysis pipeline. The project queries TNS (Transient Name Server), computes nightly observability windows, downloads/organizes Lasair and WISeREP auxiliary data, runs a reproducible spectral-diagnostics pipeline, and generates Chinese report notebooks plus English final-presentation slides.
+
+## Current Deliverable Workflow
+
+Use these as the current stable entry points:
+
+```bash
+conda activate astro_env
+python scripts/fetch_target_params.py
+python scripts/fetch_aux_data.py
+python scripts/build_analysis_products.py
+python scripts/build_presentation_figures.py
+python scripts/create_deliverable_notebooks.py
+```
+
+- Main scientific tables are under `output/analysis_pipeline/*.csv`.
+- Main scientific figures are under `output/analysis_pipeline/figures/*.png`.
+- Slide-specific copies/composites are under `ppt/figures/`.
+- Final slides under `ppt/` must stay English.
+- README and top-level notebooks can use Chinese explanatory text.
+- If notebook structure changes, edit `scripts/create_deliverable_notebooks.py` and regenerate notebooks; do not only hand-edit `.ipynb`.
 
 ## Module Map
 
 | File | Role | Entry Points |
 |------|------|-------------|
 | `src/pipeline.py` | **Core orchestrator**: config loading, TNS data acquisition (catalog + page scraping), observability calculation, finder chart download, report generation | `run_pipeline(config_path)` |
+| `src/spectral_pipeline.py` | **Current main science pipeline**: reads calibrated 1-D FITS spectra, rest-frame correction, sparse-spectrum line diagnostics, pEW/FWHM, blackbody color temperature, host-line indices, QC flags, CSV/figure generation | `build_all(project_root, output_dir)` |
 | `src/finder.py` | **Finder chart generator**: astroquery SkyView query + matplotlib WCS plot with crosshair, scale bar | `generate_finder_chart()` |
 | `scripts/fetch_target_params.py` | **CLI wrapper**: invokes `python -m src.pipeline` from project root | `main()` |
 | `src/fetch_aux_data.py` | **Aux data orchestrator**: Lasair light curve + WISeREP spectra acquisition | `run(config_path)` |
+| `scripts/build_analysis_products.py` | **Science-product builder**: command-line wrapper around `src.spectral_pipeline.build_all()` | `main()` |
+| `scripts/build_presentation_figures.py` | **Slide-figure builder**: copies/recomposes analysis figures into `ppt/figures/` | `main()` |
+| `scripts/create_deliverable_notebooks.py` | **Notebook generator**: regenerates the four curated top-level notebooks with Chinese explanatory text | `main()` |
 | `src/lasair.py` | **Lasair light curve**: ZTF light curve download, CSV export, matplotlib plot with filters | `fetch_lasair_object()`, `plot_lightcurve()` |
 | `src/wiserep.py` | **WISeREP spectra**: spectrum metadata search, file download, ASCII parsing, plotting | `fetch_spectra_metadata()`, `download_spectrum_file()`, `plot_spectra()` |
 | `src/utils.py` | HTTP client, TNS credentials manager (`TnsCredentials`), `.env` loader, CSV I/O, rate-limit tracking | `load_env_file()`, `get_tns_credentials()`, `tns_auth_headers()` |
@@ -134,6 +158,9 @@ TARDIS simulation baseline for Type Ia SNe. YAML config with 7 sections (keys re
 - **TARDIS atom data**: `data/kurucz_cd23_chianti_H_He_latest.h5` (~212 MB) — Kurucz CD23 + CHIANTI atomic data; downloaded once, shared by all simulations
 - **TARDIS simulation spectrum**: `output/{target}/tardis/tardis_spectrum_{target}.dat` — 2-column ASCII (rest-frame wavelength A, luminosity density erg/s/A); 10000 points on 500-20000 A grid
 - **TARDIS per-target config**: `output/{target}/tardis/tardis_config_{target}.yml` — copy of the YAML config used for reproducibility
+- **Analysis pipeline tables**: `output/analysis_pipeline/*.csv` — target status, spectra summary, line diagnostics with QC flags, blackbody color temperature, host-environment line indices
+- **Analysis pipeline figures**: `output/analysis_pipeline/figures/*.png` — target table, spectral sequences, velocity evolution, pEW evolution, color-temperature proxy, host-line detections
+- **Presentation figures**: `ppt/figures/*.png` — slide-ready copies/composites generated from analysis outputs
 
 ## Conda Environments
 
@@ -193,7 +220,7 @@ TARDIS simulation baseline for Type Ia SNe. YAML config with 7 sections (keys re
 
 ## TARDIS Simulation Flow
 
-The `notebooks/tardis_simulation.ipynb` notebook (runs in `tardis` kernel) implements:
+The current top-level TARDIS entry point is `notebooks/03_tardis_modeling_optional.ipynb`. Older manual TARDIS work is preserved under `notebooks/legacy/`. Run this only in the `tardis` kernel/environment and treat it as qualitative support rather than the primary science pipeline.
 
 1. **Load observed spectrum** — reads `output/{target}/spectrum/spectrum_*.dat` (2-column: wavelength_A, flux)
 2. **Set target parameters** — user provides redshift, SN type (Ia/II/Ibc), DASH age (days from peak), DASH velocity (km/s). Notebook auto-computes:
@@ -206,9 +233,9 @@ The `notebooks/tardis_simulation.ipynb` notebook (runs in `tardis` kernel) imple
 6. **Compare spectra** — de-redshifts observed spectrum to rest frame, normalises both, plots overlay + residual in 2-panel figure
 7. **Save results** — writes TARDIS spectrum `.dat` and config copy to `output/{target}/tardis/`
 
-**Notebook metadata:** kernel `tardis`, display_name `Python (tardis)`. Python files in `src/` are imported via `sys.path.insert(0, os.path.abspath('..'))` (not needed for TARDIS sim, but kept for potential reuse of `src/wiserep.py` plotting).
+**Notebook metadata:** use the `tardis` environment/kernel for TARDIS cells. The compact optional notebook currently loads observed and simulated spectra from `output/{target}/spectrum/` and `output/{target}/tardis/`.
 
-**Switching targets:** change `TARGET = "SN2026jlm"` in Cell 3. The notebook auto-detects all `.dat` files in `output/{TARGET}/spectrum/`.
+**Switching targets:** change the `TARGET` variable in `notebooks/03_tardis_modeling_optional.ipynb`; the notebook reads the first matching `.dat` observed spectrum and `tardis_spectrum_*.dat` model output for that target.
 
 ## TARDIS API v2 Notes (CRITICAL)
 
@@ -261,32 +288,23 @@ The installed TARDIS is **v2 development version** (0.1.dev1). The API differs s
 
 ## Notebooks
 
-### `notebooks/spectral_processing.ipynb` (astro_env kernel)
-- Cell 1: imports + `plot_spectra` from `src/wiserep`
-- Cell 2: load `.dat` spectrum, plot via `plot_spectra()`
-- Cell 3: DASH classification (`astrodash.Classify`) — outputs type, age, redshift, best-match template; plots template overlay
-- Cell 4: expansion velocity — picks characteristic line from DASH type (Si II for Ia, Ha for II, He I for Ibc), finds absorption minimum in rest-frame, computes v/c = Δλ/λ₀
+Current top-level notebooks are curated deliverables. Older exploratory notebooks are preserved under `notebooks/legacy/` and should not be treated as the main workflow.
 
-### `notebooks/tardis_simulation.ipynb` (tardis kernel) — 9 cells
-- **Cell 0**: markdown overview
-- **Cell 1**: imports + setup (numpy, matplotlib, yaml, tardis, astropy, pathlib)
-- **Cell 2** (section 1): load observed spectrum — `TARGET`, `SPECTRUM_DIR`, plot
-- **Cell 3** (section 2): target parameters — `target_z`, `sn_type`, `dash_age`, `dash_vel` → computes luminosity, epoch, velocity range
-- **Cell 4** (section 3): build YAML config — loads `base_Ia.yml`, overrides params, handles II/Ibc abundances, writes to `configs/tardis/{TARGET}.yml`
-- **Cell 5** (section 4): check atomic data — verifies `.h5` exists in `data/`
-- **Cell 6** (section 5): run TARDIS — `run_tardis()`, prints `t_inner`, extracts spectrum
-- **Cell 7** (section 6): compare spectra — rest-frame correction, normalisation, 2-panel plot (overlay + residual)
-- **Cell 8** (section 7): save results — writes spectrum `.dat` + config `.yml` to `output/{TARGET}/tardis/`
-- **Cell 9**: next steps markdown
+| Notebook | Role |
+|----------|------|
+| `notebooks/01_data_collection_and_observing.ipynb` | Target metadata, observing preparation, and product inventory. Remote refresh is opt-in. |
+| `notebooks/02_spectral_analysis_pipeline.ipynb` | Main reproducible spectral pipeline notebook; calls `src.spectral_pipeline.build_all()` and displays CSV/figure outputs. |
+| `notebooks/03_tardis_modeling_optional.ipynb` | Optional qualitative TARDIS comparison only; use for line-ID/shape interpretation, not strong physical constraints. |
+| `notebooks/04_project_report.ipynb` | Chinese P2Rp2-style report notebook with question, data, analysis, figures, interpretation, conclusions, and contribution placeholders. |
 
-**Key notebook variables** that cross cells:
-- `TARGET` (str), `target_z` (float), `sn_type` (str), `epoch_days` (float), `v_start`/`v_stop` (float), `lum_log_sol` (float)
-- `wave_obs`, `flux_obs` — from spectrum file (Cell 2, used in Cell 7)
-- `out_config_path` — pathlib Path to generated YAML (Cell 4, used in Cells 6, 8)
-- `ATOM_H5_PATH` — absolute path to `.h5` (Cell 4, used in Cells 5, 6)
-- `sim` — TARDIS Simulation object (Cell 6)
-- `spectrum` — `sim.spectrum_solver.spectrum_real_packets` (Cell 6, used in Cell 7)
-- `tardis_wave`, `tardis_flux` — extracted arrays (Cell 7, used in Cell 8)
+Legacy notebooks in `notebooks/legacy/` include earlier DASH, Superfit, spectral reduction, normalization, diagnostics, and TARDIS experiments. They are useful for provenance but not for final reproducibility.
+
+## Current Analysis Status
+
+- Completed first-pass automation: multi-epoch spectral sequences, type-aware line velocity measurements, pEW/FWHM/depth, blackbody color-temperature proxy, host-line indices, target-level summary, and report-ready figures.
+- Still partial: TARDIS modeling is qualitative only and not an automatic physical fitter.
+- Still partial: host extinction/environment diagnostics are rough line-index outputs, not fully flux-calibrated environmental measurements.
+- Still required before final science claims: inspect `line_diagnostics_qc.csv`, especially `qc_flag=check`, and maintain a final adopted-measurements table for values used in reports/slides.
 
 ## Testing
 
@@ -299,6 +317,10 @@ python -m src.pipeline
 python scripts/fetch_aux_data.py
 # or
 python -m src.fetch_aux_data
+# Current batch science products:
+python scripts/build_analysis_products.py
+# Notebook regeneration:
+python scripts/create_deliverable_notebooks.py
 ```
 
 ## Do NOT

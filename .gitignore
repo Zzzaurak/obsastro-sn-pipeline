@@ -35,10 +35,12 @@ build/
 
 # Jupyter
 .ipynb_checkpoints/
+notebooks/legacy/*
 
 # tests
 tests/
 
+# others
 paper/
 P2Rp*
 ppt/*
