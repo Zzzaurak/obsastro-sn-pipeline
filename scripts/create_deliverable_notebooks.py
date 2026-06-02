@@ -31,22 +31,35 @@ def code(source: str) -> dict:
     }
 
 
-def notebook(cells: list[dict]) -> dict:
+def notebook(cells: list[dict], *, display_name: str = "Python (astro_env)", python_version: str | None = None) -> dict:
+    language_info = {"name": "python", "pygments_lexer": "ipython3"}
+    if python_version:
+        language_info["version"] = python_version
     return {
         "cells": cells,
         "metadata": {
-            "kernelspec": {"display_name": "Python (astro_env)", "language": "python", "name": "python3"},
-            "language_info": {"name": "python", "pygments_lexer": "ipython3"},
+            "kernelspec": {"display_name": display_name, "language": "python", "name": "python3"},
+            "language_info": language_info,
         },
         "nbformat": 4,
         "nbformat_minor": 5,
     }
 
 
-def write_notebook(name: str, cells: list[dict]) -> Path:
+def write_notebook(
+    name: str,
+    cells: list[dict],
+    *,
+    display_name: str = "Python (astro_env)",
+    python_version: str | None = None,
+) -> Path:
     NOTEBOOK_DIR.mkdir(parents=True, exist_ok=True)
     path = NOTEBOOK_DIR / name
-    path.write_text(json.dumps(notebook(cells), ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(notebook(cells, display_name=display_name, python_version=python_version), ensure_ascii=False, indent=1)
+        + "\n",
+        encoding="utf-8",
+    )
     return path
 
 
@@ -66,16 +79,21 @@ OBSERVING_NOTEBOOK = [
         import json
         import subprocess
         import sys
+        from importlib import reload
 
-        import matplotlib.pyplot as plt
-        import matplotlib.pyplot as plt
         import matplotlib.pyplot as plt
         import pandas as pd
         from IPython.display import display, Markdown, Image
 
         PROJECT_ROOT = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
+        sys.path.insert(0, str(PROJECT_ROOT))
+
+        from src import spectral_pipeline as sp
+        from src import spectral_notebook_tools as snt
+
         OUTPUT_DIR = PROJECT_ROOT / "output"
         ANALYSIS_DIR = OUTPUT_DIR / "analysis_pipeline"
+        FIG_DIR = ANALYSIS_DIR / "figures"
         CONFIG_PATH = PROJECT_ROOT / "configs" / "sn_parameter.json"
         """
     ),
@@ -138,6 +156,134 @@ OBSERVING_NOTEBOOK = [
     ),
     md(
         """
+        ## 可选：重新运行 Superfit
+
+        默认保持 `RUN_SUPERFIT = False`，避免打开 notebook 就批量重跑。需要刷新模板拟合时，先在 `SUPERFIT_TARGETS` 里指定目标；空列表表示对所有 `data/SN*/SN*.txt` 重跑。若有可靠宿主红移，可填入 `SUPERFIT_Z_BY_TARGET`，否则 Superfit 会在粗红移网格中搜索。
+        """
+    ),
+    code(
+        """
+        RUN_SUPERFIT = False
+        SUPERFIT_TARGETS = []  # 例如 ["SN2026KID"]; 空列表表示全部本地 txt 光谱
+        SUPERFIT_Z_BY_TARGET = {
+            # "SN2026KID": 0.0014,
+        }
+
+        if RUN_SUPERFIT:
+            superfit_run_table = snt.run_superfit_batch(
+                PROJECT_ROOT,
+                targets=SUPERFIT_TARGETS,
+                z_by_target=SUPERFIT_Z_BY_TARGET,
+                z_range=(0.0, 0.08),
+                z_step=0.005,
+                resolution=30,
+                how_many_plots=5,
+            )
+            display(superfit_run_table)
+        else:
+            print("未重跑 Superfit；使用已有 data/SN*/superfit/*.csv。")
+        """
+    ),
+    md(
+        """
+        ## 可选：重新运行 DASH
+
+        默认保持 `RUN_DASH = False`。DASH 会读取 `data/SN*/SN*.txt`，并把匹配结果写回 `notebooks/DASH_matches.txt`。如果 `DASH_KNOWN_Z = True`，需要为所有待跑目标在 `DASH_Z_BY_TARGET` 填可靠红移；否则 DASH 会自己估计红移。
+        """
+    ),
+    code(
+        """
+        RUN_DASH = False
+        DASH_TARGETS = []  # 例如 ["SN2026JLM"]; 空列表表示全部本地 txt 光谱
+        DASH_KNOWN_Z = False
+        DASH_Z_BY_TARGET = {
+            # "SN2026JLM": 0.0155,
+        }
+
+        if RUN_DASH:
+            dash_run_table = snt.run_dash_batch(
+                PROJECT_ROOT,
+                targets=DASH_TARGETS,
+                z_by_target=DASH_Z_BY_TARGET,
+                known_z=DASH_KNOWN_Z,
+                output_path=PROJECT_ROOT / "notebooks" / "DASH_matches.txt",
+                top_n=5,
+            )
+            display(dash_run_table)
+        else:
+            print("未重跑 DASH；使用已有 notebooks/DASH_matches.txt。")
+        """
+    ),
+    md(
+        """
+        ## 已有模板工具产物：Superfit/DASH 状态
+
+        这里盘点 `data/SN*/superfit/*.csv` 和 `notebooks/DASH_matches.txt` 里已有或刚重跑出的模板分类结果，作为后面经验粗分类的交叉参考。
+        """
+    ),
+    code(
+        """
+        superfit_summary = snt.summarize_existing_superfit_results(PROJECT_ROOT)
+        if superfit_summary.empty:
+            print("没有发现已有 Superfit CSV。")
+        else:
+            display(superfit_summary)
+
+        template_spectrum_table, template_target_table = snt.summarize_local_template_classifications(PROJECT_ROOT)
+        if template_target_table.empty:
+            print("没有可汇总的本地模板分类结果。")
+        else:
+            display(template_target_table)
+
+        dash_log = PROJECT_ROOT / "notebooks" / "DASH_matches.txt"
+        if dash_log.exists():
+            print(f"已有 DASH 文本记录：{dash_log}")
+        else:
+            print("没有发现 DASH_matches.txt。")
+        """
+    ),
+    md(
+        """
+        ## 全自动本地光谱粗分类
+
+        这一步只读取 `data/` 下自己的 FITS 光谱，不读 `data/tns_public_objects.csv`，也不读 TNS 类型。方法是轻量级经验分类：先用宿主窄发射线粗估红移，再测 Si、H、He、O、Ca、Fe 等关键谱线的吸收特征，给出 Ia/II/IIb/Ib/Ic 的初筛类型、粗红移、代表速度和黑体颜色温度。
+
+        这不是 DASH/SNID/Superfit 模板匹配，只用于观测准备和 02 notebook 自动选线；最终报告中的类型仍应结合人工检查或模板工具确认。
+        """
+    ),
+    code(
+        """
+        reload(snt)
+
+        spectra_local, skipped_local = snt.load_observed_spectra(PROJECT_ROOT, target_metadata={})
+        if not spectra_local:
+            print("没有找到可处理的一维 FITS 光谱。")
+        else:
+            rough_spectrum_table, rough_target_table, rough_feature_table = snt.rough_classify_spectra(spectra_local)
+            template_spectrum_table, template_target_table = snt.summarize_local_template_classifications(PROJECT_ROOT)
+            classification_target_table = snt.combine_template_and_rough_classifications(template_target_table, rough_target_table)
+
+            display(classification_target_table)
+            display(rough_target_table)
+            display(rough_spectrum_table[[
+                "target", "file", "date_obs", "rough_type", "rough_type_confidence",
+                "rough_z", "rough_z_source", "rough_velocity_line", "rough_velocity_kms", "T_bb_K",
+            ]])
+            snt.plot_rough_classification_summary(classification_target_table, FIG_DIR, save_figures=True)
+
+            ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
+            classification_target_table.to_csv(ANALYSIS_DIR / "local_classification_targets.csv", index=False)
+            template_spectrum_table.to_csv(ANALYSIS_DIR / "local_template_classification_spectra.csv", index=False)
+            template_target_table.to_csv(ANALYSIS_DIR / "local_template_classification_targets.csv", index=False)
+            rough_target_table.to_csv(ANALYSIS_DIR / "rough_classification_targets.csv", index=False)
+            rough_spectrum_table.to_csv(ANALYSIS_DIR / "rough_classification_spectra.csv", index=False)
+            rough_feature_table.to_csv(ANALYSIS_DIR / "rough_classification_line_features.csv", index=False)
+            skipped_local.to_csv(ANALYSIS_DIR / "rough_classification_skipped_fits.csv", index=False)
+            print(f"Saved rough-classification products to {ANALYSIS_DIR}")
+        """
+    ),
+    md(
+        """
         ## 光谱分析 pipeline 给出的目标状态
 
         运行 `02_spectral_analysis_pipeline.ipynb` 或 `scripts/build_analysis_products.py` 后，这里会显示最新的目标状态表。
@@ -173,6 +319,7 @@ SPECTRAL_NOTEBOOK = [
         import sys
 
         import matplotlib.pyplot as plt
+        import numpy as np
         import pandas as pd
         from IPython.display import display
         from importlib import reload
@@ -196,10 +343,13 @@ SPECTRAL_NOTEBOOK = [
         - `TARGETS`：空列表表示处理所有 `data/SN*/` 光谱。
         - `TARGET_METADATA`：只放你手动确认的信息；默认不读 TNS catalog，也不读 `output/`。
         - `REDSHIFT_MEASUREMENTS`：手动测得的宿主窄线红移表。多条光谱/多条谱线时，目标级红移取中位数并显示 scatter。
-        - `TARGET_LINES`：为某个目标指定要测的谱线。
+        - `TARGET_LINES`：为某个目标手动覆盖要测的谱线；留空时按 SN 类型自动选择关键谱线。
+        - `AUTO_CLASSIFY_TYPES`：没有手动类型时，使用本地光谱经验粗分类结果给 02 自动选线。
         - `LINE_PARAM_OVERRIDES`：按谱线、目标+谱线、目标+文件+谱线覆盖半宽、平滑窗口、连续谱边缘比例。
-        - 红移检查第 4 节里只改“选取的发射线”和“手动观测波长”。
+        - 红移检查第 4 节里只改“选取的发射线”、“手动观测波长”和 `REDSHIFT_SPECTRUM_INDEX`。
         - `CHECK_*`：控制最后的单条谱线局部检查图。
+
+        方法说明：本节只设置参数，不读取数据，也不运行任何拟合。
         """
     ),
     code(
@@ -217,14 +367,20 @@ SPECTRAL_NOTEBOOK = [
         ]
 
         TARGET_LINES = {
+            # 留空时按 spec["type"] 自动选择；这里仅用于手动覆盖。
             # "SN2026KID": ["Halpha", "Hbeta", "FeII5169"],
             # "SN2026JLM": ["SiII6355", "CaIIHK", "SII5640"],
         }
+
+        AUTO_CLASSIFY_TYPES = True  # 没有手动 type 时，用本地光谱经验粗分类来自动选线
+        AUTO_APPLY_ROUGH_Z = False  # 红移仍建议用第 4-5 节手动宿主窄线测量；不默认采用粗红移
+        AUTO_OVERWRITE_MANUAL_TYPE = False
 
         LINE_HALF_WIDTH = 420.0
         LINE_SMOOTH_WINDOW = 21
         LINE_EDGE_FRACTION = 0.18
         BB_WAVE_RANGE = (4200.0, 7600.0)
+        RAW_REFERENCE_LINES = ["CaIIHK", "Hgamma", "Hbeta", "FeII5169", "SII5640", "HeI5876", "SiII6355", "Halpha", "OI7774", "CaIINIR"]
 
         LINE_PARAM_OVERRIDES = {
             # "SiII6355": {"half_width": 500.0},
@@ -241,12 +397,28 @@ SPECTRAL_NOTEBOOK = [
         MAX_DIAGNOSTIC_PANELS = 12
 
         REDSHIFT_CHECK_TARGET = None
-        REDSHIFT_CHECK_INDEX = 0
         REDSHIFT_HALF_WIDTH = 160.0
 
         CHECK_TARGET = None
         CHECK_LINE = None
-        CHECK_INDEX = 0
+        """
+    ),
+    md(
+        """
+        ### 按 SN 类型自动选择的关键科学谱线
+
+        这些谱线来自当前 `src.spectral_pipeline` 的默认规则，并参考了文献调研中 SNID/Superfit/DASH 分类、Type II 光谱多样性、Ia 大样本和去包层超新星数据集的常用诊断：
+
+        | 类型 | 自动测量的关键谱线 | 用途 |
+        |---|---|---|
+        | Ia | Si II 6355/5972, S II 5640, Ca II H&K/NIR, C II 6580 | 分类确认、Si II 速度与 pEW、正常/高速 Ia 和碳线检查 |
+        | II | H alpha/beta/gamma, Fe II 5169/5018/4924, Sc II 5527, Ca II H&K/NIR | 氢线与 Fe II 速度、平台期谱线演化、Type II 文献比较 |
+        | IIn | H alpha/beta/gamma, Fe II 5169, Ca II H&K | 窄/宽氢发射和相互作用迹象的初筛 |
+        | IIb | H alpha/beta, He I 5876/6678/7065, Fe II 5169, Ca II H&K/NIR | 氢到氦的转变、IIb/Ib 子型判断 |
+        | Ib | He I 5876/6678/7065, Ca II H&K/NIR, O I 7774 | 氦线识别、Ib/Ic 区分 |
+        | Ic/Ic-BL | O I 7774, Ca II H&K/NIR, Fe II 5169, C II 6580 | 无氢氦谱线、O/Ca/Fe 速度与宽线候选检查 |
+
+        `TARGET_LINES` 留空时会按这些规则自动选择；若某个目标需要更保守或更窄的线表，可以在配置区手动覆盖。
         """
     ),
     md(
@@ -254,6 +426,8 @@ SPECTRAL_NOTEBOOK = [
         ## 2. 导入 notebook 工具函数
 
         大段调参辅助函数已经放到 `src/spectral_notebook_tools.py`，这里保持 notebook 简洁。你修改 `src/` 后可以重新运行这个 cell。
+
+        方法说明：本节只导入/重载函数，不运行任何拟合。
         """
     ),
     code(
@@ -267,6 +441,8 @@ SPECTRAL_NOTEBOOK = [
         ## 3. 读取本地观测光谱
 
         这里只读取 `data/` 下的一维 FITS 光谱，不读 `data/tns_public_objects.csv`，也不读 `output/`。因此初始红移通常是空的，除非你在 `TARGET_METADATA` 里手动填了 `z`。
+
+        方法说明：本步不做物理拟合，也不做红移校正；图中光谱只用 Savitzky-Golay 作轻微预平滑以便显示。Savitzky-Golay 的含义是在移动窗口内做低阶多项式拟合，并用该窗口中心的拟合值替代原始值。竖虚线是 `RAW_REFERENCE_LINES` 的未校准静止波长参考线，直接画在观测波长轴上，没有乘 `(1+z)`，只用于找线。
         """
     ),
     code(
@@ -285,6 +461,17 @@ SPECTRAL_NOTEBOOK = [
         if not skipped_fits.empty:
             print("跳过的 FITS：")
             display(skipped_fits)
+
+        print("未处理的多历元光谱序列图：只用原始观测波长和本地 FITS flux，不应用红移、类型或自动选线。")
+        for target in sorted(summary_raw["target"].unique()):
+            raw_sequence_fig = snt.plot_raw_spectral_sequence(
+                target,
+                spectra_raw,
+                fig_dir=FIG_DIR,
+                save_figures=SAVE_FIGURES,
+                reference_lines=RAW_REFERENCE_LINES,
+            )
+            snt.show_figure(raw_sequence_fig)
         """
     ),
     md(
@@ -293,16 +480,19 @@ SPECTRAL_NOTEBOOK = [
 
         这一步只建议用于宿主星系窄发射线，例如 Halpha、Hbeta、[O III]。超新星自身的宽吸收线会被膨胀速度蓝移，不能直接当作宇宙学红移。
 
-        在下面的 code cell 顶部只改 `SELECTED_EMISSION_LINE` 和 `MANUAL_OBSERVED_WAVE`。`z_guess` 会优先由手动波长推断；手动波长为空时，再用已有 `REDSHIFT_MEASUREMENTS` 或已设置的目标红移。
+        在下面的 code cell 顶部只改 `SELECTED_EMISSION_LINE`、`MANUAL_OBSERVED_WAVE` 和 `REDSHIFT_SPECTRUM_INDEX`。`z_guess` 会优先由手动波长推断；手动波长为空时，再用已有 `REDSHIFT_MEASUREMENTS` 或已设置的目标红移。
 
         如果一个目标有多条光谱，建议在 `REDSHIFT_MEASUREMENTS` 里填多条记录；后面会按目标取中位数红移，并显示 scatter。
+
+        方法说明：局部窗口先用 Savitzky-Golay 做移动窗口低阶多项式预平滑；然后在窗口左右两端各取一段谱的中位数，连接这两个中位数点，得到一条局部线性连续谱；最后用 `flux / continuum` 归一化。绿线是自动取峰/取谷位置；紫线是手动或最终采用位置。`z_preview` 返回绿线自动红移，`redshift_plot["adopted_z"]` 是紫线红移。TNS 红移只打印作外部参考，不参与本 notebook 的红移采用。
         """
     ),
     code(
         """
-        # 本 cell 通常只需要改这两项。
+        # 本 cell 通常只需要改这三项。
         SELECTED_EMISSION_LINE = "Halpha"  # 可选示例：Halpha, Hbeta, OIII5007, OIII4959, SII6716
         MANUAL_OBSERVED_WAVE = None  # 看图后填观测波长，例如 6701.2；第一次看图可先保留 None
+        REDSHIFT_SPECTRUM_INDEX = 0  # 先看下面的 spectrum_index 表，再改这里选择第几条光谱
 
         redshift_check_target = summary_raw.iloc[0]["target"] if REDSHIFT_CHECK_TARGET is None else REDSHIFT_CHECK_TARGET
         redshift_rest_wave = snt.line_rest_wave(SELECTED_EMISSION_LINE)
@@ -314,12 +504,14 @@ SPECTRAL_NOTEBOOK = [
             manual_observed_wave=MANUAL_OBSERVED_WAVE,
             measurements=REDSHIFT_MEASUREMENTS,
         )
+        redshift_tns_ref = snt.tns_redshift_reference(PROJECT_ROOT, redshift_check_target)
 
         redshift_items = sorted(
             [spec for spec in spectra_raw if spec["target"] == snt.target_key(redshift_check_target)],
             key=lambda spec: pd.Timestamp.max if pd.isna(spec["date_obs"]) else spec["date_obs"],
         )
-        redshift_spec = redshift_items[int(REDSHIFT_CHECK_INDEX)]
+        display(snt.spectrum_choice_table(spectra_raw, redshift_check_target))
+        redshift_spec = redshift_items[int(REDSHIFT_SPECTRUM_INDEX)]
         redshift_plot, z_preview = snt.plot_redshift_zoom(
             redshift_spec,
             SELECTED_EMISSION_LINE,
@@ -329,23 +521,49 @@ SPECTRAL_NOTEBOOK = [
             manual_observed_wave=MANUAL_OBSERVED_WAVE,
             mode="emission",
         )
+        snt.show_figure(redshift_plot.get("figure"))
         print(f"line = {SELECTED_EMISSION_LINE}, rest_wave = {redshift_rest_wave:.3f} A")
         print(f"plot z_guess = {redshift_z_guess:.6f}")
-        print(f"auto/adopted preview z = {z_preview:.6f}")
-        print(f"auto/adopted preview lambda = {redshift_plot['adopted_wave']:.3f} A")
+        if np.isfinite(redshift_tns_ref["z_tns"]):
+            print(f"TNS/public-catalog reference z = {redshift_tns_ref['z_tns']:.6f} ({redshift_tns_ref['status']}; not used in calculation)")
+        else:
+            print(f"TNS/public-catalog reference z = unavailable ({redshift_tns_ref['status']}; not used in calculation)")
+        if redshift_tns_ref.get("type_tns"):
+            print(f"TNS/public-catalog type = {redshift_tns_ref['type_tns']}")
+        print(f"green/auto line z = {z_preview:.6f}")
+        print(f"green/auto line lambda = {redshift_plot['auto_wave']:.3f} A")
+        if redshift_plot["adopted_wave"] != redshift_plot["auto_wave"]:
+            print(f"purple/manual-adopted z = {redshift_plot['adopted_z']:.6f}")
+            print(f"purple/manual-adopted lambda = {redshift_plot['adopted_wave']:.3f} A")
         print(f"file = {redshift_spec['file']}")
-        print("如果紫色线位置可靠，把下面这条记录复制进 REDSHIFT_MEASUREMENTS；否则先改 MANUAL_OBSERVED_WAVE 后重跑本 cell。")
+        print("下面第一条记录对应绿线自动值；如果你填了 MANUAL_OBSERVED_WAVE 且紫线更可靠，请用第二条 purple/manual 记录。")
         print({
             "target": redshift_spec["target"],
             "file": redshift_spec["file"],
             "line": SELECTED_EMISSION_LINE,
             "kind": "host/emission",
             "rest_wave": redshift_rest_wave,
-            "observed_wave": redshift_plot["adopted_wave"],
+            "observed_wave": redshift_plot["auto_wave"],
         })
+        if redshift_plot["adopted_wave"] != redshift_plot["auto_wave"]:
+            print({
+                "target": redshift_spec["target"],
+                "file": redshift_spec["file"],
+                "line": SELECTED_EMISSION_LINE,
+                "kind": "host/emission",
+                "rest_wave": redshift_rest_wave,
+                "observed_wave": redshift_plot["adopted_wave"],
+                "note": "purple/manual-adopted",
+            })
         """
     ),
-    md("## 5. 汇总手动红移，并应用到光谱"),
+    md(
+        """
+        ## 5. 汇总手动红移，并用本地光谱粗分类自动选线
+
+        方法说明：手动红移按目标取中位数，scatter 只作为多条线/多历元一致性的提示。粗分类不是物理拟合；它把局部线性连续谱归一化后的关键吸收线强度、宿主窄发射线启发式红移，以及已有 Superfit/DASH 模板结果合并成类型建议。默认不把粗分类红移写入科学测量。
+        """
+    ),
     code(
         """
         redshift_table, redshift_summary, MANUAL_REDSHIFT_BY_TARGET = snt.redshift_table_from_measurements(REDSHIFT_MEASUREMENTS)
@@ -353,8 +571,30 @@ SPECTRAL_NOTEBOOK = [
         display(redshift_summary)
 
         spectra = snt.apply_redshift_overrides(spectra_raw, MANUAL_REDSHIFT_BY_TARGET)
+
+        rough_spectrum_table, rough_target_table, rough_feature_table = snt.rough_classify_spectra(spectra)
+        template_spectrum_table, template_target_table = snt.summarize_local_template_classifications(PROJECT_ROOT)
+        active_targets = {spec["target"] for spec in spectra}
+        if not template_target_table.empty:
+            template_target_table = template_target_table[template_target_table["target"].isin(active_targets)].reset_index(drop=True)
+        if not template_spectrum_table.empty:
+            template_spectrum_table = template_spectrum_table[template_spectrum_table["target"].isin(active_targets)].reset_index(drop=True)
+        classification_target_table = snt.combine_template_and_rough_classifications(template_target_table, rough_target_table)
+        if AUTO_CLASSIFY_TYPES:
+            spectra = snt.apply_classification_context_to_spectra(
+                spectra,
+                classification_target_table,
+                apply_type=True,
+                apply_z=AUTO_APPLY_ROUGH_Z,
+                overwrite_existing_type=AUTO_OVERWRITE_MANUAL_TYPE,
+            )
+
         summary = sp.build_summary(spectra)
         display(summary)
+        display(classification_target_table)
+        display(template_target_table)
+        display(rough_target_table)
+        display(snt.selected_line_plan(spectra, TARGET_LINES))
         """
     ),
     md(
@@ -362,18 +602,21 @@ SPECTRAL_NOTEBOOK = [
         ## 6. 多历元光谱序列
 
         下轴是观测波长，上轴是按当前目标红移换算后的静止系波长。谱线竖线画在观测波长位置，即 `rest_wave * (1 + z)`；如果目标还没有红移，就只能暂时画在静止波长位置。
+
+        方法说明：本步只是可视化，没有额外拟合；光谱为显示目的用 Savitzky-Golay 平滑和中位数尺度归一，谱线位置只由第 5 节采用的 `z` 换算。
         """
     ),
     code(
         """
         for target in sorted(summary["target"].unique()):
-            snt.plot_spectral_sequence_dual_axis(
+            sequence_fig = snt.plot_spectral_sequence_dual_axis(
                 target,
                 spectra,
                 target_lines=TARGET_LINES,
                 fig_dir=FIG_DIR,
                 save_figures=SAVE_FIGURES,
             )
+            snt.show_figure(sequence_fig)
         """
     ),
     md(
@@ -381,6 +624,10 @@ SPECTRAL_NOTEBOOK = [
         ## 7. 批量测量谱线、黑体颜色温度和宿主线
 
         这一步使用第 5 节得到的手动红移。如果某个目标还没有红移，速度和静止系谱线测量只是占位结果，不应写入科学结论。
+
+        实际测量的谱线由第 5 节的 `selected_line_plan` 决定：`TARGET_LINES` 有手动覆盖时优先用它，否则按手动类型或自动粗分类类型选择关键谱线。
+
+        方法说明：谱线测量先转到当前静止系，再用 Savitzky-Golay 移动窗口低阶多项式预平滑，并用局部线性连续谱归一化；吸收线中心取归一化谱的最小值，速度由 `rest_wave - abs_wave` 计算，pEW 由 `1 - flux/continuum` 积分，FWHM 由半深度宽度估计。紫色高斯吸收轮廓只用于后面诊断图的可视化，不作为最终科学量。黑体颜色温度用 Planck 黑体谱做非线性最小二乘拟合。宿主线指标用局部中位数连续谱和 robust noise，不做高斯拟合。
         """
     ),
     code(
@@ -404,10 +651,16 @@ SPECTRAL_NOTEBOOK = [
         display(line_qc[["target", "file", "line", "velocity_kms", "pEW_A", "FWHM_A", "depth", "qc_flag", "qc_note"]].head(20))
         """
     ),
-    md("## 8. 谱线局部诊断图：中心、吸收谷、拟合和 pEW 区域"),
+    md(
+        """
+        ## 8. 谱线局部诊断图：中心、吸收谷、拟合和 pEW 区域
+
+        方法说明：每个谱线面板分上下两行。上图显示原始 flux、Savitzky-Golay 预平滑后的 flux，以及橙色局部线性连续谱；下图显示 `flux / continuum` 后的归一化谱。紫色线是“线性基线 + 高斯吸收”的视觉拟合，只帮助判断中心/宽度是否合理，不覆盖自动测得的速度、pEW、FWHM。浅紫色区域是 pEW 积分区域，即归一化谱中 `1 - flux/continuum` 的正面积；它不是误差带或高斯置信区间。
+        """
+    ),
     code(
         """
-        snt.plot_line_diagnostics_grid(
+        line_diagnostics_fig = snt.plot_line_diagnostics_grid(
             spectra,
             line_qc,
             target=DIAGNOSTIC_TARGET,
@@ -416,69 +669,82 @@ SPECTRAL_NOTEBOOK = [
             save_figures=SAVE_FIGURES,
             **measure_kwargs,
         )
+        snt.show_figure(line_diagnostics_fig)
         """
     ),
-    md("## 9. 黑体连续谱拟合图"),
+    md(
+        """
+        ## 9. 黑体连续谱拟合图
+
+        方法说明：先取 `BB_WAVE_RANGE` 内的静止系光谱，平滑后做简单背景偏移和归一化，再用 Planck `B_lambda(T)` 黑体谱作非线性最小二乘拟合；输出的是颜色温度 proxy，不是完整辐射传输温度。图的标题分两行显示，只有最底行显示横坐标标题，避免标题与横坐标重叠。
+        """
+    ),
     code(
         """
-        snt.plot_blackbody_fit_grid(
+        blackbody_fit_fig = snt.plot_blackbody_fit_grid(
             spectra,
             target=DIAGNOSTIC_TARGET,
             wave_range=BB_WAVE_RANGE,
             fig_dir=FIG_DIR,
             save_figures=SAVE_FIGURES,
         )
+        snt.show_figure(blackbody_fit_fig)
         """
     ),
-    md("## 10. 科学量图：谱线速度"),
+    md("## 10. 科学量图：谱线速度\n\n方法说明：本步只绘制第 7 节已经测出的速度，不再做新拟合。"),
     code(
         """
-        snt.plot_quantity_by_target(line_qc, "velocity_kms", "Velocity (km/s)", "Line velocity evolution", "line_velocity_evolution.png", FIG_DIR, save_figures=SAVE_FIGURES)
+        velocity_fig = snt.plot_quantity_by_target(line_qc, "velocity_kms", "Velocity (km/s)", "Line velocity evolution", "line_velocity_evolution.png", FIG_DIR, save_figures=SAVE_FIGURES)
+        snt.show_figure(velocity_fig)
         """
     ),
-    md("## 11. 科学量图：pseudo-equivalent width"),
+    md("## 11. 科学量图：pseudo-equivalent width\n\n方法说明：本步只绘制第 7 节由局部线性连续谱归一化后积分得到的 pEW，不再做新拟合。"),
     code(
         """
-        snt.plot_quantity_by_target(line_qc, "pEW_A", "pEW (Angstrom)", "Pseudo-equivalent width evolution", "pew_evolution.png", FIG_DIR, save_figures=SAVE_FIGURES)
+        pew_fig = snt.plot_quantity_by_target(line_qc, "pEW_A", "pEW (Angstrom)", "Pseudo-equivalent width evolution", "pew_evolution.png", FIG_DIR, save_figures=SAVE_FIGURES)
+        snt.show_figure(pew_fig)
         """
     ),
-    md("## 12. 科学量图：FWHM"),
+    md("## 12. 科学量图：FWHM\n\n方法说明：本步只绘制第 7 节由吸收线半深度宽度估计出的 FWHM，不再做新拟合。"),
     code(
         """
-        snt.plot_quantity_by_target(line_qc, "FWHM_A", "FWHM (Angstrom)", "Line FWHM evolution", "fwhm_evolution.png", FIG_DIR, save_figures=SAVE_FIGURES)
+        fwhm_fig = snt.plot_quantity_by_target(line_qc, "FWHM_A", "FWHM (Angstrom)", "Line FWHM evolution", "fwhm_evolution.png", FIG_DIR, save_figures=SAVE_FIGURES)
+        snt.show_figure(fwhm_fig)
         """
     ),
-    md("## 13. 科学量图：线深"),
+    md("## 13. 科学量图：线深\n\n方法说明：本步只绘制第 7 节由归一化谱线谷值计算出的线深，不再做新拟合。"),
     code(
         """
-        snt.plot_quantity_by_target(line_qc, "depth", "Line depth", "Absorption-line depth evolution", "line_depth_evolution.png", FIG_DIR, save_figures=SAVE_FIGURES)
+        depth_fig = snt.plot_quantity_by_target(line_qc, "depth", "Line depth", "Absorption-line depth evolution", "line_depth_evolution.png", FIG_DIR, save_figures=SAVE_FIGURES)
+        snt.show_figure(depth_fig)
         """
     ),
-    md("## 14. 科学量图：连续谱黑体颜色温度"),
+    md("## 14. 科学量图：连续谱黑体颜色温度\n\n方法说明：本步只把第 7/9 节 Planck 黑体谱拟合得到的颜色温度画成演化图，不再做新拟合。"),
     code(
         """
         ok_bb = bb_df[bb_df["status"].eq("ok")].copy()
         if ok_bb.empty:
             print("没有成功的黑体颜色温度拟合。")
         else:
-            plt.figure(figsize=(10, 5))
+            fig, ax = plt.subplots(figsize=(10, 5))
             for target, group in ok_bb.groupby("target"):
                 x = group["phase_days"] if group["phase_days"].notna().any() else pd.to_datetime(group["date_obs"])
-                plt.errorbar(x, group["T_bb_K"], yerr=group["T_err_K"], marker="o", capsize=2, lw=1.2, label=target)
-            plt.ylabel("Blackbody color temperature (K)")
-            plt.xlabel("Days since discovery / obs date")
-            plt.title("Continuum blackbody color-temperature estimate")
-            plt.grid(alpha=0.25)
-            plt.legend(fontsize=8)
-            snt.save_figure(plt.gcf(), FIG_DIR, "blackbody_temperature.png", enabled=SAVE_FIGURES)
-            plt.show()
+                ax.errorbar(x, group["T_bb_K"], yerr=group["T_err_K"], marker="o", capsize=2, lw=1.2, label=target)
+            ax.set_ylabel("Blackbody color temperature (K)")
+            ax.set_xlabel("Days since discovery / obs date")
+            ax.set_title("Continuum blackbody color-temperature estimate")
+            ax.grid(alpha=0.25)
+            ax.legend(fontsize=8)
+            snt.save_figure(fig, FIG_DIR, "blackbody_temperature.png", enabled=SAVE_FIGURES)
+            snt.show_figure(fig)
         display(bb_df)
         """
     ),
-    md("## 15. 科学量图：宿主/环境窄线指标"),
+    md("## 15. 科学量图：宿主/环境窄线指标\n\n方法说明：宿主线指标使用红移后的窄窗口，局部两侧窗口取中位数连续谱，用 MAD/标准差估计噪声，并积分线区通量；这里不做高斯拟合，也不能替代严格流量定标的环境诊断。"),
     code(
         """
-        snt.plot_host_line_grid(host_lines, target=DIAGNOSTIC_TARGET, fig_dir=FIG_DIR, save_figures=SAVE_FIGURES)
+        host_line_fig = snt.plot_host_line_grid(host_lines, target=DIAGNOSTIC_TARGET, fig_dir=FIG_DIR, save_figures=SAVE_FIGURES)
+        snt.show_figure(host_line_fig)
         display(host_summary)
         display(host_lines)
         """
@@ -487,7 +753,7 @@ SPECTRAL_NOTEBOOK = [
         """
         ## 16. 单条谱线局部检查图
 
-        改 `CHECK_TARGET`、`CHECK_LINE`、`CHECK_INDEX`，或回到配置区改 `LINE_PARAM_OVERRIDES` 后重新运行。
+        改 `CHECK_TARGET`、`CHECK_LINE`、`CHECK_SPECTRUM_INDEX`，或回到配置区改 `LINE_PARAM_OVERRIDES` 后重新运行。
 
         图中：
 
@@ -496,29 +762,35 @@ SPECTRAL_NOTEBOOK = [
         - 橙色：局部线性连续谱。
         - 紫色：为了可视化而拟合的高斯吸收轮廓，不作为强物理模型。
         - 红虚线：谱线静止波长；绿虚线：自动选择的吸收谷。
+
+        方法说明：这张图是第 7 节单条谱线测量的放大复核。连续谱为局部线性模型，紫色为线性基线 + 高斯吸收的视觉拟合，pEW 仍来自连续谱与平滑谱之间的直接积分。
         """
     ),
     code(
         """
-        if CHECK_TARGET is None:
-            CHECK_TARGET = summary.iloc[0]["target"]
-        if CHECK_LINE is None:
-            first_spec = next(spec for spec in spectra if spec["target"] == snt.target_key(CHECK_TARGET))
-            CHECK_LINE = snt.line_keys_for(first_spec, TARGET_LINES)[0]
+        CHECK_TARGET_LOCAL = summary.iloc[0]["target"] if CHECK_TARGET is None else CHECK_TARGET
+        CHECK_LINE_KEY = CHECK_LINE  # 例如 "Halpha"；None 表示使用该目标自动线表的第一条
+        CHECK_SPECTRUM_INDEX = 0  # 先看下面的 spectrum_index 表，再改这里选择第几条光谱
 
-        check_result, _ = snt.plot_line_check(
+        display(snt.spectrum_choice_table(spectra, CHECK_TARGET_LOCAL))
+        if CHECK_LINE_KEY is None:
+            first_spec = next(spec for spec in spectra if spec["target"] == snt.target_key(CHECK_TARGET_LOCAL))
+            CHECK_LINE_KEY = snt.line_keys_for(first_spec, TARGET_LINES)[0]
+
+        check_result, check_fig = snt.plot_line_check(
             spectra,
-            target=CHECK_TARGET,
-            line_key=CHECK_LINE,
-            spectrum_index=CHECK_INDEX,
+            target=CHECK_TARGET_LOCAL,
+            line_key=CHECK_LINE_KEY,
+            spectrum_index=CHECK_SPECTRUM_INDEX,
             fig_dir=FIG_DIR,
             save_figures=SAVE_FIGURES,
             **measure_kwargs,
         )
+        snt.show_figure(check_fig)
         display(check_result)
         """
     ),
-    md("## 17. 保存 CSV 汇总"),
+    md("## 17. 保存 CSV 汇总\n\n方法说明：本节只把前面已经算出的表格写入 CSV，不运行新的拟合或重新测量。"),
     code(
         """
         def output_path(name):
@@ -558,6 +830,8 @@ SPECTRAL_NOTEBOOK = [
     md(
         """
         ## 18. 下一步人工确认
+
+        方法说明：本节不做拟合，只列出需要人工检查和后续采用的结果。
 
         正式报告里建议只引用：
 
@@ -781,8 +1055,8 @@ def main() -> None:
     written = [
         write_notebook("01_data_collection_and_observing.ipynb", OBSERVING_NOTEBOOK),
         write_notebook("02_spectral_analysis_pipeline.ipynb", SPECTRAL_NOTEBOOK),
-        write_notebook("03_tardis_modeling_optional.ipynb", TARDIS_NOTEBOOK),
-        write_notebook("04_project_report.ipynb", REPORT_NOTEBOOK),
+        write_notebook("03_tardis_modeling_optional.ipynb", TARDIS_NOTEBOOK, display_name="tardis", python_version="3.13.3"),
+        write_notebook("04_project_report.ipynb", REPORT_NOTEBOOK, display_name="astro_env", python_version="3.10.20"),
     ]
     print("Wrote notebooks:")
     for path in written:

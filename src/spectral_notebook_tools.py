@@ -6,6 +6,10 @@ while reusing the project-level logic in `src.spectral_pipeline`.
 
 from __future__ import annotations
 
+import json
+import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Iterable
 
@@ -15,6 +19,20 @@ import pandas as pd
 from scipy.optimize import curve_fit
 
 from src import spectral_pipeline as sp
+
+
+RAW_SEQUENCE_REFERENCE_LINES = [
+    "CaIIHK",
+    "Hgamma",
+    "Hbeta",
+    "FeII5169",
+    "SII5640",
+    "HeI5876",
+    "SiII6355",
+    "Halpha",
+    "OI7774",
+    "CaIINIR",
+]
 
 
 def load_observed_spectra(project_root: Path, target_metadata: dict[str, dict[str, object]] | None = None) -> tuple[list[dict], pd.DataFrame]:
@@ -120,6 +138,25 @@ def target_redshift(spectra: Iterable[dict], target: str) -> float:
     return float(np.nanmedian(z_values)) if z_values else np.nan
 
 
+def tns_redshift_reference(project_root: Path, target: str) -> dict[str, object]:
+    """Return a TNS public-catalog redshift reference without using it in local measurements."""
+    catalog_path = project_root / "data" / "tns_public_objects.csv"
+    key = target_key(target)
+    if not catalog_path.exists():
+        return {"target": key, "z_tns": np.nan, "type_tns": "", "source": str(catalog_path), "status": "catalog missing"}
+    metadata = sp.load_tns_metadata(catalog_path)
+    row = metadata.get(key, {})
+    z_tns = sp.parse_float(row.get("z"))
+    status = "ok" if np.isfinite(z_tns) else "target missing or redshift unavailable"
+    return {
+        "target": key,
+        "z_tns": z_tns,
+        "type_tns": row.get("type", ""),
+        "source": str(catalog_path),
+        "status": status,
+    }
+
+
 def apply_redshift_overrides(spectra: list[dict], redshift_by_target: dict[str, float]) -> list[dict]:
     updated = []
     for spec in spectra:
@@ -130,6 +167,686 @@ def apply_redshift_overrides(spectra: list[dict], redshift_by_target: dict[str, 
             copy["z_source"] = "manual"
         updated.append(copy)
     return updated
+
+
+def selected_line_plan(spectra: Iterable[dict], target_lines: dict[str, list[str]] | None = None) -> pd.DataFrame:
+    rows = []
+    for spec in spectra:
+        rows.append(
+            {
+                "target": spec["target"],
+                "type": spec.get("type", ""),
+                "type_source": spec.get("type_source", ""),
+                "selected_lines": ", ".join(line_keys_for(spec, target_lines)),
+            }
+        )
+    if not rows:
+        return pd.DataFrame(columns=["target", "type", "type_source", "selected_lines"])
+    return pd.DataFrame(rows).drop_duplicates().sort_values(["target", "type"]).reset_index(drop=True)
+
+
+def _robust_noise(values: np.ndarray) -> float:
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    if values.size < 5:
+        return np.nan
+    med = np.nanmedian(values)
+    noise = 1.4826 * np.nanmedian(np.abs(values - med))
+    if not np.isfinite(noise) or noise <= 0:
+        noise = np.nanstd(values)
+    return float(noise)
+
+
+def _line_emission_snr(wave: np.ndarray, flux: np.ndarray, center: float) -> float:
+    signal = (wave > center - 7.0) & (wave < center + 7.0)
+    side = ((wave > center - 65.0) & (wave < center - 18.0)) | ((wave > center + 18.0) & (wave < center + 65.0))
+    if signal.sum() < 3 or side.sum() < 8:
+        return np.nan
+    continuum = np.nanmedian(flux[side])
+    noise = _robust_noise(flux[side])
+    if not np.isfinite(noise) or noise <= 0:
+        return np.nan
+    return float((np.nanmax(flux[signal]) - continuum) / noise)
+
+
+def estimate_host_redshift_rough(
+    spec: dict,
+    *,
+    z_min: float = 0.0,
+    z_max: float = 0.08,
+    z_step: float = 0.0005,
+) -> dict[str, object]:
+    """Rough host redshift from narrow emission-line coincidences in the observed spectrum."""
+    wave = np.asarray(spec["wave"], dtype=float)
+    flux = sp.smooth_flux(np.asarray(spec["flux"], dtype=float), preferred_window=11)
+    valid = np.isfinite(wave) & np.isfinite(flux)
+    wave = wave[valid]
+    flux = flux[valid]
+    if wave.size < 50:
+        return {"z_rough": np.nan, "host_score": 0.0, "host_lines": "", "status": "too few points"}
+
+    host_lines = ["Halpha", "Hbeta", "OIII5007", "OIII4959", "SII6716", "SII6731"]
+    best = {"z_rough": np.nan, "host_score": 0.0, "host_lines": "", "status": "no narrow host-line match"}
+    for z in np.arange(z_min, z_max + z_step / 2.0, z_step):
+        scores = []
+        labels = []
+        for line in host_lines:
+            rest = sp.HOST_LINES[line]
+            center = rest * (1.0 + z)
+            if center < np.nanmin(wave) + 70.0 or center > np.nanmax(wave) - 70.0:
+                continue
+            snr = _line_emission_snr(wave, flux, center)
+            if np.isfinite(snr) and snr > 2.5:
+                scores.append(min(float(snr), 12.0))
+                labels.append(f"{line}:{snr:.1f}")
+        if not scores:
+            continue
+        score = float(np.sum(np.maximum(np.asarray(scores) - 2.0, 0.0)))
+        if len(scores) >= 2:
+            score *= 1.35
+        if score > best["host_score"]:
+            best = {"z_rough": float(z), "host_score": score, "host_lines": ", ".join(labels), "status": "host emission heuristic"}
+    if best["host_score"] < 1.0:
+        best["z_rough"] = np.nan
+    return best
+
+
+def _feature_signal(row: pd.Series | dict) -> float:
+    status = row.get("status", "")
+    if status != "ok":
+        return 0.0
+    depth = sp.parse_float(row.get("depth"))
+    pew = sp.parse_float(row.get("pEW_A"))
+    velocity = sp.parse_float(row.get("velocity_kms"))
+    if not np.isfinite(depth) or depth <= 0:
+        return 0.0
+    if np.isfinite(velocity) and (velocity < 500 or velocity > 35000):
+        return 0.0
+    return float(np.clip(2.8 * depth, 0.0, 1.0) + np.clip(pew / 120.0, 0.0, 0.45))
+
+
+def rough_line_features_for_spectrum(spec: dict, z: float, line_keys: Iterable[str] | None = None) -> pd.DataFrame:
+    wave_rest = spec["wave"] / (1.0 + z) if np.isfinite(z) else spec["wave"].copy()
+    rows = []
+    for line_key in line_keys or sp.LINE_LIBRARY.keys():
+        if line_key not in sp.LINE_LIBRARY:
+            continue
+        row = sp.measure_absorption_line(wave_rest, spec["flux"], line_key, half_width=520.0)
+        row.update(
+            {
+                "target": spec["target"],
+                "file": spec["file"],
+                "date_obs": spec["date_obs"],
+                "line_signal": _feature_signal(row),
+            }
+        )
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def rough_type_scores(feature_table: pd.DataFrame) -> dict[str, float]:
+    if feature_table.empty:
+        return {"SN Ia": 0.0, "SN II": 0.0, "SN IIb": 0.0, "SN Ib": 0.0, "SN Ic": 0.0}
+    signal = {row["line"]: _feature_signal(row) for _, row in feature_table.iterrows()}
+
+    def s(name: str) -> float:
+        return float(signal.get(name, 0.0))
+
+    h = max(s("Halpha"), 0.8 * s("Hbeta"), 0.6 * s("Hgamma"))
+    he = max(s("HeI5876"), 0.8 * s("HeI6678"), 0.7 * s("HeI7065"))
+    ca = max(s("CaIIHK"), 0.9 * s("CaIINIR"))
+    fe = max(s("FeII5169"), 0.8 * s("FeII5018"), 0.7 * s("FeII4924"))
+    si = max(s("SiII6355"), 0.8 * s("SiII5972"))
+    scores = {
+        "SN Ia": 1.6 * s("SiII6355") + 0.8 * s("SiII5972") + 0.8 * s("SII5640") + 0.45 * ca - 0.45 * h - 0.35 * he,
+        "SN II": 1.55 * s("Halpha") + 0.85 * s("Hbeta") + 0.75 * fe + 0.35 * s("ScII5527") - 0.4 * si,
+        "SN IIb": 0.95 * s("Halpha") + 1.05 * s("HeI5876") + 0.6 * s("HeI6678") + 0.45 * fe - 0.35 * si,
+        "SN Ib": 1.35 * s("HeI5876") + 0.8 * s("HeI6678") + 0.65 * s("HeI7065") + 0.3 * ca - 0.65 * s("Halpha") - 0.35 * si,
+        "SN Ic": 1.15 * s("OI7774") + 0.7 * ca + 0.35 * fe + 0.35 * s("CII6580") - 0.75 * h - 0.75 * he - 0.35 * si,
+    }
+    return {key: float(max(value, 0.0)) for key, value in scores.items()}
+
+
+def rough_classify_spectra(spectra: list[dict]) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Heuristic SN type/parameter estimate from local spectra only.
+
+    This is a lightweight first-pass classifier, not a replacement for DASH,
+    SNID, or Superfit template matching.
+    """
+    spectrum_rows = []
+    feature_frames = []
+    for spec in spectra:
+        host_z = estimate_host_redshift_rough(spec)
+        existing_z = sp.parse_float(spec.get("z"))
+        z_used = host_z["z_rough"] if np.isfinite(host_z["z_rough"]) else existing_z
+        if not np.isfinite(z_used):
+            z_used = 0.0
+        features = rough_line_features_for_spectrum(spec, z_used)
+        scores = rough_type_scores(features)
+        positives = {key: value for key, value in scores.items() if value > 0}
+        if positives:
+            ranked = sorted(positives.items(), key=lambda item: item[1], reverse=True)
+            rough_type = ranked[0][0]
+            best_score = ranked[0][1]
+            runner_up = ranked[1][1] if len(ranked) > 1 else 0.0
+            confidence = best_score / (sum(positives.values()) + 1e-9)
+            if best_score < 0.35 or best_score - runner_up < 0.08:
+                confidence *= 0.55
+            if confidence < 0.35:
+                rough_type = "Unclassified"
+        else:
+            ranked = []
+            rough_type = "Unclassified"
+            best_score = 0.0
+            runner_up = 0.0
+            confidence = 0.0
+
+        primary = sp.primary_lines_for_type(rough_type)
+        candidate_features = features[features["line"].isin(primary)].copy() if primary else features.copy()
+        if candidate_features.empty:
+            candidate_features = features.copy()
+        candidate_features["line_signal"] = pd.to_numeric(candidate_features["line_signal"], errors="coerce")
+        best_line = candidate_features.sort_values("line_signal", ascending=False).head(1)
+        if best_line.empty:
+            velocity_line = ""
+            velocity_kms = np.nan
+        else:
+            velocity_line = str(best_line.iloc[0]["line"])
+            velocity_kms = sp.parse_float(best_line.iloc[0].get("velocity_kms"))
+
+        bb = sp.fit_blackbody_temperature(spec["wave"] / (1.0 + z_used), spec["flux"])
+        spectrum_rows.append(
+            {
+                "target": spec["target"],
+                "file": spec["file"],
+                "date_obs": spec["date_obs"],
+                "rough_type": rough_type,
+                "rough_type_confidence": float(confidence),
+                "rough_type_score": float(best_score),
+                "rough_type_runner_up_score": float(runner_up),
+                "rough_z": float(z_used) if np.isfinite(z_used) else np.nan,
+                "rough_z_source": host_z["status"] if np.isfinite(host_z["z_rough"]) else ("manual_config" if np.isfinite(existing_z) else "none"),
+                "host_line_score": host_z["host_score"],
+                "host_line_matches": host_z["host_lines"],
+                "rough_velocity_line": velocity_line,
+                "rough_velocity_kms": velocity_kms,
+                "T_bb_K": bb.get("T_bb_K", np.nan),
+                "T_status": bb.get("status", ""),
+                "score_detail": "; ".join(f"{key}={value:.2f}" for key, value in sorted(scores.items())),
+                "method_note": "heuristic line-score classifier; verify with DASH/SNID/Superfit before final claims",
+            }
+        )
+        feature_frames.append(features.assign(rough_z=z_used, rough_type=rough_type))
+
+    spectrum_table = pd.DataFrame(spectrum_rows)
+    feature_table = pd.concat(feature_frames, ignore_index=True) if feature_frames else pd.DataFrame()
+    target_rows = []
+    if not spectrum_table.empty:
+        for target, group in spectrum_table.groupby("target"):
+            type_counts = group.groupby("rough_type")["rough_type_confidence"].sum().sort_values(ascending=False)
+            rough_type = str(type_counts.index[0]) if not type_counts.empty else "Unclassified"
+            z_values = pd.to_numeric(group["rough_z"], errors="coerce").replace(0.0, np.nan).dropna()
+            conf = pd.to_numeric(group.loc[group["rough_type"].eq(rough_type), "rough_type_confidence"], errors="coerce")
+            velocities = pd.to_numeric(group["rough_velocity_kms"], errors="coerce").dropna()
+            target_rows.append(
+                {
+                    "target": target,
+                    "rough_type": rough_type,
+                    "rough_type_confidence": float(conf.mean()) if not conf.empty else np.nan,
+                    "n_spectra": len(group),
+                    "rough_z_median": float(z_values.median()) if not z_values.empty else np.nan,
+                    "rough_z_scatter": float(z_values.std(ddof=1)) if len(z_values) > 1 else np.nan,
+                    "rough_velocity_median_kms": float(velocities.median()) if not velocities.empty else np.nan,
+                    "type_votes": "; ".join(f"{idx}:{val:.2f}" for idx, val in type_counts.items()),
+                    "selected_lines": ", ".join(sp.default_lines_for_type(rough_type)),
+                }
+            )
+    target_table = pd.DataFrame(target_rows).sort_values("target").reset_index(drop=True) if target_rows else pd.DataFrame()
+    return spectrum_table, target_table, feature_table
+
+
+def apply_rough_classification_to_spectra(
+    spectra: list[dict],
+    rough_target_table: pd.DataFrame,
+    *,
+    apply_type: bool = True,
+    apply_z: bool = False,
+    overwrite_existing_type: bool = False,
+) -> list[dict]:
+    if rough_target_table.empty:
+        return [dict(spec) for spec in spectra]
+    by_target = rough_target_table.set_index("target").to_dict(orient="index")
+    updated = []
+    for spec in spectra:
+        copy = dict(spec)
+        row = by_target.get(copy["target"])
+        if row:
+            rough_type = str(row.get("rough_type", ""))
+            if apply_type and rough_type and rough_type != "Unclassified":
+                existing = str(copy.get("type", "") or "").strip()
+                if overwrite_existing_type or not existing:
+                    copy["type"] = rough_type
+                    copy["type_source"] = "rough_auto"
+            z = sp.parse_float(row.get("rough_z_median"))
+            if apply_z and np.isfinite(z) and not np.isfinite(sp.parse_float(copy.get("z"))):
+                copy["z"] = z
+                copy["z_source"] = "rough_auto"
+        updated.append(copy)
+    return updated
+
+
+def normalize_template_type(value: object) -> str:
+    text = str(value or "").strip()
+    key = sp.canonical_sn_type(text)
+    labels = {
+        "ia": "SN Ia",
+        "ii": "SN II",
+        "iin": "SN IIn",
+        "iib": "SN IIb",
+        "ib": "SN Ib",
+        "ic": "SN Ic",
+        "icbl": "SN Ic-BL",
+    }
+    return labels.get(key, "Unclassified")
+
+
+def _target_filter(targets: Iterable[str] | None) -> set[str]:
+    return {target_key(target) for target in (targets or []) if target_key(target)}
+
+
+def local_spectrum_text_files(project_root: Path, targets: Iterable[str] | None = None) -> list[Path]:
+    wanted = _target_filter(targets)
+    files = []
+    for path in sorted((project_root / "data").glob("SN*/SN*.txt")):
+        if path.parent.name == "superfit" or "superfit" in path.parts or path.name.endswith("_binned.txt"):
+            continue
+        target = target_key(path.parent.name)
+        if wanted and target not in wanted:
+            continue
+        files.append(path)
+    return files
+
+
+def run_superfit_batch(
+    project_root: Path,
+    *,
+    targets: Iterable[str] | None = None,
+    z_by_target: dict[str, float] | None = None,
+    z_range: tuple[float, float] = (0.0, 0.08),
+    z_step: float = 0.005,
+    resolution: int = 30,
+    how_many_plots: int = 5,
+) -> pd.DataFrame:
+    """Run NGSF/Superfit on local 2-column spectra under data/SN*/."""
+    z_by_target = {target_key(k): sp.parse_float(v) for k, v in (z_by_target or {}).items()}
+    files = local_spectrum_text_files(project_root, targets)
+    if not files:
+        return pd.DataFrame([{"status": "no input spectra"}])
+
+    sn_template_types = [
+        "Ia-norm",
+        "Ia 91T-like",
+        "Ia 91bg-like",
+        "Ia-pec",
+        "II",
+        "IIn",
+        "IIb",
+        "Ib",
+        "Ic",
+        "Ic-BL",
+        "SLSN-I",
+        "SLSN-II",
+        "TDE H",
+        "TDE H+He",
+    ]
+    galaxy_template_types = ["E", "S0", "Sa", "Sb", "Sc"]
+    runner_code = r'''
+import json
+import sys
+import matplotlib
+matplotlib.use("Agg")
+
+params = json.loads(sys.argv[1])
+sys.argv = ["ngsf_notebook", json.dumps(params)]
+
+from NGSF.sf_class import Superfit
+
+fit = Superfit()
+fit.superfit()
+print(fit.results_path)
+'''
+
+    rows = []
+    for spec_file in files:
+        target = target_key(spec_file.parent.name)
+        out_dir = spec_file.parent / "superfit"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        z_exact = z_by_target.get(target, np.nan)
+        use_exact_z = bool(np.isfinite(z_exact))
+        params = {
+            "object_to_fit": str(spec_file.resolve()),
+            "use_exact_z": 1 if use_exact_z else 0,
+            "z_exact": float(z_exact) if use_exact_z else 0.0,
+            "z_range_begin": float(z_range[0]),
+            "z_range_end": float(z_range[1]),
+            "z_int": float(z_step),
+            "resolution": int(resolution),
+            "temp_sn_tr": sn_template_types,
+            "temp_gal_tr": galaxy_template_types,
+            "lower_lam": 3800,
+            "upper_lam": 8500,
+            "error_spectrum": "sg",
+            "saving_results_path": str(out_dir.resolve()) + "/",
+            "show_plot": 0,
+            "show_plot_png": True,
+            "how_many_plots": int(how_many_plots),
+            "mask_galaxy_lines": 1 if use_exact_z else 0,
+            "mask_telluric": 1,
+            "minimum_overlap": 0.6,
+            "epoch_high": 0,
+            "epoch_low": 0,
+            "Alam_high": 1.5,
+            "Alam_low": -1.5,
+            "Alam_interval": 0.5,
+        }
+        (out_dir / "parameters_used.json").write_text(json.dumps(params, ensure_ascii=False, indent=2), encoding="utf-8")
+        completed = subprocess.run(
+            [sys.executable, "-c", runner_code, json.dumps(params)],
+            cwd=str(project_root),
+            text=True,
+            capture_output=True,
+        )
+        result_csv = out_dir / f"{spec_file.stem}.csv"
+        status = "ok" if completed.returncode == 0 and result_csv.exists() else "failed"
+        rows.append(
+            {
+                "target": target,
+                "file": str(spec_file.relative_to(project_root)),
+                "result_csv": str(result_csv.relative_to(project_root)) if result_csv.exists() else "",
+                "status": status,
+                "stdout": completed.stdout.strip()[-500:],
+                "stderr": completed.stderr.strip()[-500:],
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def run_dash_batch(
+    project_root: Path,
+    *,
+    targets: Iterable[str] | None = None,
+    z_by_target: dict[str, float] | None = None,
+    known_z: bool = False,
+    output_path: Path | None = None,
+    top_n: int = 5,
+) -> pd.DataFrame:
+    """Run AstroDash on local 2-column spectra and update DASH_matches.txt."""
+    files = local_spectrum_text_files(project_root, targets)
+    if not files:
+        return pd.DataFrame([{"status": "no input spectra"}])
+    output_path = output_path or (project_root / "notebooks" / "DASH_matches.txt")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    z_by_target = {target_key(k): sp.parse_float(v) for k, v in (z_by_target or {}).items()}
+    use_known_z = bool(known_z)
+    redshifts = []
+    if use_known_z:
+        for path in files:
+            z = z_by_target.get(target_key(path.parent.name), np.nan)
+            if not np.isfinite(z):
+                use_known_z = False
+                break
+            redshifts.append(float(z))
+    if not use_known_z:
+        redshifts = []
+
+    try:
+        from astrodash import Classify
+
+        classifier = Classify(
+            filenames=[str(path) for path in files],
+            redshifts=redshifts,
+            knownZ=use_known_z,
+            classifyHost=False,
+            rlapScores=True,
+        )
+        classifier.list_best_matches(n=int(top_n), saveFilename=str(output_path))
+        parsed = summarize_existing_dash_results(project_root)
+        if not parsed.empty:
+            parsed = parsed[parsed["file"].isin([path.name for path in files])].reset_index(drop=True)
+            parsed["status"] = "ok"
+            parsed["output_file"] = str(output_path.relative_to(project_root))
+            return parsed
+        return pd.DataFrame(
+            [
+                {
+                    "target": target_key(path.parent.name),
+                    "file": path.name,
+                    "status": "ok",
+                    "output_file": str(output_path.relative_to(project_root)),
+                }
+                for path in files
+            ]
+        )
+    except Exception as exc:
+        return pd.DataFrame(
+            [
+                {
+                    "target": target_key(path.parent.name),
+                    "file": str(path.relative_to(project_root)),
+                    "status": "failed",
+                    "error": repr(exc),
+                    "output_file": str(output_path.relative_to(project_root)),
+                }
+                for path in files
+            ]
+        )
+
+
+def summarize_existing_dash_results(project_root: Path) -> pd.DataFrame:
+    path = project_root / "notebooks" / "DASH_matches.txt"
+    if not path.exists():
+        return pd.DataFrame()
+    rows = []
+    pattern = re.compile(
+        r"^(?P<file>\S+)\s+z=(?P<z>[0-9.\-]+)\s+\('(?P<dash_type>[^']+)',\s*'(?P<phase>[^']+)',\s*(?P<prob>[^)]+)\).*?rlap:\s*(?P<rlap>[0-9.]+)",
+        re.IGNORECASE,
+    )
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        match = pattern.search(line.strip())
+        if not match:
+            continue
+        file_name = match.group("file")
+        target = target_key(file_name.split("_")[0])
+        dash_type = match.group("dash_type")
+        rows.append(
+            {
+                "target": target,
+                "file": file_name,
+                "method": "DASH",
+                "template_type_raw": dash_type,
+                "template_type": normalize_template_type(dash_type),
+                "z": sp.parse_float(match.group("z")),
+                "phase": match.group("phase"),
+                "score": sp.parse_float(match.group("rlap")),
+                "weight": max(0.2, sp.parse_float(match.group("rlap")) / 10.0),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def summarize_local_template_classifications(project_root: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+    rows = []
+    superfit = summarize_existing_superfit_results(project_root)
+    if not superfit.empty:
+        for _, row in superfit.iterrows():
+            sn_fraction = sp.parse_float(row.get("sn_fraction"))
+            chi = sp.parse_float(row.get("chi2_dof2"))
+            weight = sn_fraction if np.isfinite(sn_fraction) and sn_fraction > 0 else 0.5
+            if np.isfinite(chi) and chi > 0:
+                weight *= min(2.0, 0.05 / chi)
+            rows.append(
+                {
+                    "target": row["target"],
+                    "file": row["file"],
+                    "method": "Superfit",
+                    "template_type_raw": row["best_superfit_type"],
+                    "template_type": normalize_template_type(row["best_superfit_type"]),
+                    "z": row.get("z", np.nan),
+                    "phase": row.get("phase", np.nan),
+                    "score": row.get("chi2_dof2", np.nan),
+                    "weight": float(max(weight, 0.1)),
+                }
+            )
+    dash = summarize_existing_dash_results(project_root)
+    if not dash.empty:
+        rows.extend(dash.to_dict(orient="records"))
+    spectrum_table = pd.DataFrame(rows)
+    if spectrum_table.empty:
+        return spectrum_table, pd.DataFrame()
+
+    target_rows = []
+    for target, group in spectrum_table.groupby("target"):
+        valid = group[group["template_type"].ne("Unclassified")].copy()
+        if valid.empty:
+            template_type = "Unclassified"
+            confidence = 0.0
+            votes = ""
+        else:
+            votes_series = valid.groupby("template_type")["weight"].sum().sort_values(ascending=False)
+            template_type = str(votes_series.index[0])
+            confidence = float(votes_series.iloc[0] / votes_series.sum()) if votes_series.sum() > 0 else 0.0
+            votes = "; ".join(f"{idx}:{val:.2f}" for idx, val in votes_series.items())
+        z_values = pd.to_numeric(valid["z"], errors="coerce").dropna() if not valid.empty else pd.Series(dtype=float)
+        target_rows.append(
+            {
+                "target": target,
+                "template_type": template_type,
+                "template_type_confidence": confidence,
+                "template_z_median": float(z_values.median()) if not z_values.empty else np.nan,
+                "n_template_results": len(group),
+                "template_votes": votes,
+                "method": ", ".join(sorted(group["method"].unique())),
+            }
+        )
+    target_table = pd.DataFrame(target_rows).sort_values("target").reset_index(drop=True)
+    return spectrum_table.sort_values(["target", "method", "file"]).reset_index(drop=True), target_table
+
+
+def combine_template_and_rough_classifications(template_target_table: pd.DataFrame, rough_target_table: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    targets = sorted(set(template_target_table.get("target", [])) | set(rough_target_table.get("target", [])))
+    template_by_target = template_target_table.set_index("target") if not template_target_table.empty else pd.DataFrame()
+    rough_by_target = rough_target_table.set_index("target") if not rough_target_table.empty else pd.DataFrame()
+    for target in targets:
+        trow = template_by_target.loc[target] if target in template_by_target.index else None
+        rrow = rough_by_target.loc[target] if target in rough_by_target.index else None
+        template_type = trow.get("template_type", "Unclassified") if isinstance(trow, pd.Series) else "Unclassified"
+        rough_type = rrow.get("rough_type", "Unclassified") if isinstance(rrow, pd.Series) else "Unclassified"
+        if template_type and template_type != "Unclassified":
+            adopted_type = template_type
+            source = f"local_template:{trow.get('method', '')}"
+            confidence = sp.parse_float(trow.get("template_type_confidence"))
+        elif rough_type and rough_type != "Unclassified":
+            adopted_type = rough_type
+            source = "heuristic_line_score"
+            confidence = sp.parse_float(rrow.get("rough_type_confidence"))
+        else:
+            adopted_type = "Unclassified"
+            source = "none"
+            confidence = np.nan
+        template_z = sp.parse_float(trow.get("template_z_median")) if isinstance(trow, pd.Series) else np.nan
+        rough_z = sp.parse_float(rrow.get("rough_z_median")) if isinstance(rrow, pd.Series) else np.nan
+        rows.append(
+            {
+                "target": target,
+                "adopted_type": adopted_type,
+                "type_source": source,
+                "type_confidence": confidence,
+                "template_type": template_type,
+                "rough_type": rough_type,
+                "template_z_median": template_z,
+                "rough_z_median": rough_z,
+                "selected_lines": ", ".join(sp.default_lines_for_type(adopted_type)),
+            }
+        )
+    return pd.DataFrame(rows).sort_values("target").reset_index(drop=True)
+
+
+def apply_classification_context_to_spectra(
+    spectra: list[dict],
+    classification_target_table: pd.DataFrame,
+    *,
+    apply_type: bool = True,
+    apply_z: bool = False,
+    overwrite_existing_type: bool = False,
+) -> list[dict]:
+    if classification_target_table.empty:
+        return [dict(spec) for spec in spectra]
+    by_target = classification_target_table.set_index("target").to_dict(orient="index")
+    updated = []
+    for spec in spectra:
+        copy = dict(spec)
+        row = by_target.get(copy["target"])
+        if row:
+            adopted_type = str(row.get("adopted_type", ""))
+            if apply_type and adopted_type and adopted_type != "Unclassified":
+                existing = str(copy.get("type", "") or "").strip()
+                if overwrite_existing_type or not existing:
+                    copy["type"] = adopted_type
+                    copy["type_source"] = row.get("type_source", "local_classification")
+            z = sp.parse_float(row.get("template_z_median"))
+            if not np.isfinite(z):
+                z = sp.parse_float(row.get("rough_z_median"))
+            if apply_z and np.isfinite(z) and not np.isfinite(sp.parse_float(copy.get("z"))):
+                copy["z"] = z
+                copy["z_source"] = "local_classification"
+        updated.append(copy)
+    return updated
+
+
+def plot_rough_classification_summary(target_table: pd.DataFrame, fig_dir: Path, *, save_figures: bool = True):
+    if target_table.empty:
+        print("No rough-classification results to plot.")
+        return None
+    table = target_table.copy()
+    type_col = "adopted_type" if "adopted_type" in table.columns else "rough_type"
+    conf_col = "type_confidence" if "type_confidence" in table.columns else "rough_type_confidence"
+    table[conf_col] = pd.to_numeric(table[conf_col], errors="coerce").fillna(0.0)
+    fig, ax = plt.subplots(figsize=(10, max(3.5, 0.55 * len(table))))
+    labels = table["target"].astype(str) + "  " + table[type_col].astype(str)
+    ax.barh(labels, table[conf_col], color="#5b7c99")
+    ax.set_xlim(0, 1)
+    ax.set_xlabel("Type confidence / vote fraction")
+    ax.set_title("Automatic local-spectrum classification context")
+    ax.grid(axis="x", alpha=0.25)
+    save_figure(fig, fig_dir, "rough_classification_summary.png", enabled=save_figures)
+    return fig
+
+
+def summarize_existing_superfit_results(project_root: Path) -> pd.DataFrame:
+    rows = []
+    for csv_path in sorted((project_root / "data").glob("SN*/superfit/*.csv")):
+        try:
+            table = pd.read_csv(csv_path)
+        except Exception:
+            continue
+        if table.empty or "SN" not in table.columns:
+            continue
+        best = table.iloc[0]
+        template = str(best.get("SN", ""))
+        rows.append(
+            {
+                "target": target_key(csv_path.parents[1].name),
+                "file": str(csv_path.relative_to(project_root)),
+                "best_superfit_type": template.split("/")[0],
+                "best_template": template,
+                "z": sp.parse_float(best.get("Z")),
+                "phase": best.get("Phase", np.nan),
+                "chi2_dof2": sp.parse_float(best.get("CHI2/dof2")),
+                "sn_fraction": sp.parse_float(best.get("Frac(SN)")),
+            }
+        )
+    return pd.DataFrame(rows).sort_values(["target", "file"]).reset_index(drop=True) if rows else pd.DataFrame()
 
 
 def line_params_for(
@@ -419,10 +1136,103 @@ def save_figure(fig, fig_dir: Path, filename: str, *, enabled: bool = True) -> P
         return None
     fig_dir.mkdir(parents=True, exist_ok=True)
     path = fig_dir / filename
-    fig.tight_layout()
+    try:
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="This figure includes Axes that are not compatible with tight_layout.*")
+            fig.tight_layout()
+    except Exception:
+        pass
     fig.savefig(path, dpi=180, bbox_inches="tight")
     print(f"saved {path}")
     return path
+
+
+def show_figure(fig) -> None:
+    """Display one figure immediately in notebooks and close it to avoid delayed output."""
+    if fig is None:
+        return
+    try:
+        from IPython.display import display as ipy_display
+
+        ipy_display(fig)
+    except Exception:
+        plt.show()
+    finally:
+        try:
+            plt.close(fig)
+        except Exception:
+            pass
+
+
+def spectrum_choice_table(spectra: list[dict], target: str | None = None) -> pd.DataFrame:
+    rows = []
+    items = spectra
+    if target is not None:
+        items = [spec for spec in spectra if spec["target"] == target_key(target)]
+    items = sorted(items, key=lambda spec: pd.Timestamp.max if pd.isna(spec["date_obs"]) else spec["date_obs"])
+    for i, spec in enumerate(items):
+        rows.append(
+            {
+                "spectrum_index": i,
+                "target": spec["target"],
+                "date_obs": spec["date_obs"],
+                "file": spec["file"],
+                "z": spec.get("z", np.nan),
+                "type": spec.get("type", ""),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def plot_raw_spectral_sequence(
+    target: str,
+    spectra: list[dict],
+    *,
+    fig_dir: Path,
+    save_figures: bool = True,
+    reference_lines: Iterable[str] | None = None,
+):
+    items = sorted(
+        [spec for spec in spectra if spec["target"] == target_key(target)],
+        key=lambda spec: pd.Timestamp.max if pd.isna(spec["date_obs"]) else spec["date_obs"],
+    )
+    if not items:
+        print(f"No target {target}")
+        return None
+    fig, ax = plt.subplots(figsize=(11, max(3.5, 1.6 + 1.0 * len(items))))
+    for i, spec in enumerate(items):
+        flux = sp.smooth_flux(spec["flux"], preferred_window=11)
+        finite = np.isfinite(flux)
+        scale = np.nanmedian(np.abs(flux[finite])) if finite.any() else 1.0
+        if not np.isfinite(scale) or scale == 0:
+            scale = 1.0
+        date_label = "" if pd.isna(spec["date_obs"]) else spec["date_obs"].strftime("%Y-%m-%d")
+        ax.plot(spec["wave"], flux / scale + i * 1.35, lw=0.8, label=f"{i}: {date_label}")
+    for line_key in reference_lines or RAW_SEQUENCE_REFERENCE_LINES:
+        if line_key not in sp.LINE_LIBRARY:
+            continue
+        rest = float(sp.LINE_LIBRARY[line_key]["rest"])
+        ax.axvline(rest, color="#a66f00", ls=":", lw=0.8, alpha=0.62)
+        ax.text(
+            rest,
+            0.98,
+            line_key,
+            rotation=90,
+            va="top",
+            ha="right",
+            transform=ax.get_xaxis_transform(),
+            fontsize=7,
+            color="#6b4b00",
+        )
+    ax.set_title(f"{target}: raw observed spectra before redshift/type processing")
+    ax.set_xlabel("Observed wavelength (Angstrom)")
+    ax.set_ylabel("Scaled flux + offset")
+    ax.grid(alpha=0.2)
+    ax.legend(fontsize=8)
+    save_figure(fig, fig_dir, f"raw_spectral_sequence_{target}.png", enabled=save_figures)
+    return fig
 
 
 def plot_redshift_zoom(
@@ -440,6 +1250,7 @@ def plot_redshift_zoom(
         print(window.get("status"))
         return window, np.nan
     auto_wave = auto_pick_line_wavelength(window, mode=mode)
+    z_auto = redshift_from_observed(rest_wave, auto_wave)
     adopted_wave = float(manual_observed_wave) if manual_observed_wave is not None and np.isfinite(manual_observed_wave) else auto_wave
     z_adopted = redshift_from_observed(rest_wave, adopted_wave)
 
@@ -447,15 +1258,23 @@ def plot_redshift_zoom(
     ax.plot(window["wave_obs"], window["raw_flux"] / window["continuum"], color="0.7", lw=0.8, label="raw / local continuum")
     ax.plot(window["wave_obs"], window["norm"], color="black", lw=1.1, label="smoothed / local continuum")
     ax.axvline(window["center_obs"], color="red", ls="--", lw=1.0, label=f"{line_name} at z_guess")
-    ax.axvline(auto_wave, color="#1b9e77", ls=":", lw=1.5, label=f"auto {mode} pick")
-    ax.axvline(adopted_wave, color="#7b3294", ls="-.", lw=1.5, label=f"manual/adopted z={z_adopted:.5f}")
+    ax.axvline(auto_wave, color="#1b9e77", ls=":", lw=1.5, label=f"green auto {mode} pick z={z_auto:.5f}")
+    ax.axvline(adopted_wave, color="#7b3294", ls="-.", lw=1.5, label=f"purple manual/adopted z={z_adopted:.5f}")
     ax.set_xlabel("Observed wavelength (Angstrom)")
     ax.set_ylabel("Local continuum-normalized flux")
     ax.set_title(f"{spec['target']} {Path(spec['file']).name}: redshift check with {line_name}")
     ax.grid(alpha=0.25)
     ax.legend(fontsize=8)
     add_rest_top_axis(ax, z_adopted)
-    return {"window": window, "auto_wave": auto_wave, "adopted_wave": adopted_wave, "z": z_adopted, "figure": fig}, z_adopted
+    return {
+        "window": window,
+        "auto_wave": auto_wave,
+        "auto_z": z_auto,
+        "adopted_wave": adopted_wave,
+        "adopted_z": z_adopted,
+        "z": z_adopted,
+        "figure": fig,
+    }, z_auto
 
 
 def plot_spectral_sequence_dual_axis(
@@ -603,43 +1422,90 @@ def plot_line_diagnostics_grid(
     n = len(rows)
     ncols = 2
     nrows = int(np.ceil(n / ncols))
-    fig, axes = plt.subplots(nrows, ncols, figsize=(12, 3.7 * nrows), squeeze=False)
+    fig = plt.figure(figsize=(12, 5.7 * nrows))
+    height_ratios = []
+    for _ in range(nrows):
+        height_ratios.extend([1.0, 1.15])
+    grid = fig.add_gridspec(nrows * 2, ncols, height_ratios=height_ratios, hspace=0.42, wspace=0.24)
+    used_axes = []
     spec_by_file = {spec["file"]: spec for spec in spectra}
-    for ax, (_, row) in zip(axes.ravel(), rows.iterrows()):
+    for panel_i, (_, row) in enumerate(rows.iterrows()):
+        panel_row = panel_i // ncols
+        panel_col = panel_i % ncols
+        ax_flux = fig.add_subplot(grid[panel_row * 2, panel_col])
+        ax_norm = fig.add_subplot(grid[panel_row * 2 + 1, panel_col], sharex=ax_flux)
+        used_axes.extend([ax_flux, ax_norm])
         spec = spec_by_file.get(row["file"])
         if spec is None:
-            ax.axis("off")
+            ax_flux.axis("off")
+            ax_norm.axis("off")
             continue
         result, profile = measure_absorption_line_tuned(spec, row["line"], **measure_kwargs)
         if result.get("status") != "ok":
-            ax.set_title(f"{row['target']} {row['line']}: {result.get('status')}")
-            ax.axis("off")
+            ax_flux.set_title(f"{row['target']} {row['line']}: {result.get('status')}", fontsize=9)
+            ax_flux.axis("off")
+            ax_norm.axis("off")
             continue
         wave = profile["wave"]
-        cont = profile["continuum"]
-        ax.plot(wave, profile["raw_flux"] / cont, color="0.72", lw=0.7, label="raw/cont")
-        ax.plot(wave, profile["norm"], color="black", lw=1.0, label="smooth/cont")
+        raw_flux = profile["raw_flux"]
+        smooth = profile["smooth"]
+        continuum = profile["continuum"]
+        norm = profile["norm"]
+        raw_norm = raw_flux / continuum
+        fit_norm = profile["fit_norm"]
+
+        ax_flux.plot(wave, raw_flux, color="0.72", lw=0.7, label="raw flux")
+        ax_flux.plot(wave, smooth, color="black", lw=0.9, label="smoothed flux")
+        ax_flux.plot(wave, continuum, color="#d99032", lw=1.1, label="local linear continuum")
+        ax_flux.fill_between(wave, smooth, continuum, where=continuum > smooth, color="#7b3294", alpha=0.10)
+        ax_flux.axvline(result["rest_wave"], color="red", ls="--", lw=0.9, label="rest line")
+        ax_flux.axvline(result["abs_wave"], color="green", ls=":", lw=1.2, label="absorption minimum")
+        title = f"{row['target']} {row['line']}\n{Path(row['file']).name}"
+        ax_flux.set_title(title, fontsize=8, pad=3)
+        ax_flux.set_ylabel("Flux")
+        ax_flux.grid(alpha=0.18)
+        ax_flux.tick_params(labelbottom=False)
+
+        ax_norm.plot(wave, raw_norm, color="0.72", lw=0.7, label="raw / continuum")
+        ax_norm.plot(wave, norm, color="black", lw=1.0, label="smoothed / continuum")
         if profile["fit_norm"] is not None:
-            ax.plot(wave, profile["fit_norm"], color="#7b3294", lw=1.0, label="Gaussian visual fit")
-        ax.axvline(result["rest_wave"], color="red", ls="--", lw=0.9, label="rest line")
-        ax.axvline(result["abs_wave"], color="green", ls=":", lw=1.2, label="absorption minimum")
-        ax.fill_between(wave, profile["norm"], 1.0, where=profile["norm"] < 1.0, color="#7b3294", alpha=0.15)
-        title = f"{row['target']} {Path(row['file']).name} {row['line']}"
-        ax.set_title(title, fontsize=9)
-        ax.set_xlabel("Rest wavelength (Angstrom)")
-        ax.set_ylabel("Normalized flux")
-        ax.grid(alpha=0.2)
-        ax.text(
+            ax_norm.plot(wave, fit_norm, color="#7b3294", lw=1.0, label="visual Gaussian absorption fit")
+        ax_norm.axvline(result["rest_wave"], color="red", ls="--", lw=0.9)
+        ax_norm.axvline(result["abs_wave"], color="green", ls=":", lw=1.2)
+        ax_norm.fill_between(
+            wave,
+            norm,
+            1.0,
+            where=norm < 1.0,
+            color="#7b3294",
+            alpha=0.15,
+            label="pEW integration area",
+        )
+        if panel_row == nrows - 1:
+            ax_norm.set_xlabel("Rest wavelength (Angstrom)")
+        else:
+            ax_norm.set_xlabel("")
+        ax_norm.set_ylabel("Normalized flux")
+        ax_norm.grid(alpha=0.2)
+        ax_norm.text(
             0.02,
             0.05,
             f"v={result['velocity_kms']:.0f} km/s\npEW={result['pEW_A']:.1f} A, FWHM={result['FWHM_A']:.1f} A",
-            transform=ax.transAxes,
+            transform=ax_norm.transAxes,
             fontsize=8,
             bbox={"facecolor": "white", "alpha": 0.75, "edgecolor": "0.85"},
         )
-    for ax in axes.ravel()[n:]:
-        ax.axis("off")
-    axes.ravel()[0].legend(fontsize=7)
+    for panel_i in range(n, nrows * ncols):
+        panel_row = panel_i // ncols
+        panel_col = panel_i % ncols
+        ax_flux = fig.add_subplot(grid[panel_row * 2, panel_col])
+        ax_norm = fig.add_subplot(grid[panel_row * 2 + 1, panel_col])
+        ax_flux.axis("off")
+        ax_norm.axis("off")
+    if used_axes:
+        used_axes[0].legend(fontsize=7, loc="best")
+    if len(used_axes) > 1:
+        used_axes[1].legend(fontsize=7, loc="best")
     save_figure(fig, fig_dir, "line_diagnostics_grid.png", enabled=save_figures)
     return fig
 
@@ -780,17 +1646,21 @@ def plot_blackbody_fit_grid(spectra: list[dict], *, target: str | None, wave_ran
         return None
     ncols = 2
     nrows = int(np.ceil(len(items) / ncols))
-    fig, axes = plt.subplots(nrows, ncols, figsize=(12, 3.5 * nrows), squeeze=False)
-    for ax, spec in zip(axes.ravel(), items):
+    fig, axes = plt.subplots(nrows, ncols, figsize=(12, 4.0 * nrows), squeeze=False)
+    for panel_i, (ax, spec) in enumerate(zip(axes.ravel(), items)):
+        panel_row = panel_i // ncols
         prof = blackbody_profile(rest_frame_wave(spec), spec["flux"], wave_range)
         if prof.get("status") != "ok":
-            ax.set_title(f"{spec['target']} {Path(spec['file']).name}: {prof.get('status')}")
+            ax.set_title(f"{spec['target']}: {prof.get('status')}\n{Path(spec['file']).name}", fontsize=8, pad=3)
             ax.axis("off")
             continue
         ax.plot(prof["wave"], prof["flux_norm"], color="black", lw=0.9, label="continuum proxy")
         ax.plot(prof["wave"], prof["model"], color="#d95f02", lw=1.2, label="blackbody fit")
-        ax.set_title(f"{spec['target']} {Path(spec['file']).name}: T={prof['T_bb_K']:.0f} K", fontsize=9)
-        ax.set_xlabel("Rest wavelength (Angstrom)")
+        ax.set_title(f"{spec['target']}: T={prof['T_bb_K']:.0f} K\n{Path(spec['file']).name}", fontsize=8, pad=3)
+        if panel_row == nrows - 1:
+            ax.set_xlabel("Rest wavelength (Angstrom)")
+        else:
+            ax.set_xlabel("")
         ax.set_ylabel("Scaled flux")
         ax.grid(alpha=0.2)
     for ax in axes.ravel()[len(items):]:

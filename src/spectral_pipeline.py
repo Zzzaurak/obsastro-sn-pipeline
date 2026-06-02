@@ -33,13 +33,21 @@ C_KMS = 299792.458
 
 LINE_LIBRARY = {
     "SiII6355": {"rest": 6355.0, "label": "Si II 6355", "blue_only": True},
+    "SiII5972": {"rest": 5972.0, "label": "Si II 5972", "blue_only": True},
+    "CII6580": {"rest": 6580.0, "label": "C II 6580", "blue_only": True},
+    "CII7234": {"rest": 7234.0, "label": "C II 7234", "blue_only": True},
     "CaIIHK": {"rest": 3933.7, "label": "Ca II H&K / K", "blue_only": True},
     "SII5640": {"rest": 5640.0, "label": "S II W", "blue_only": False},
     "Halpha": {"rest": 6562.8, "label": "H alpha", "blue_only": True},
     "Hbeta": {"rest": 4861.3, "label": "H beta", "blue_only": True},
+    "Hgamma": {"rest": 4340.5, "label": "H gamma", "blue_only": True},
+    "FeII4924": {"rest": 4924.0, "label": "Fe II 4924", "blue_only": True},
+    "FeII5018": {"rest": 5018.0, "label": "Fe II 5018", "blue_only": True},
     "FeII5169": {"rest": 5169.0, "label": "Fe II 5169", "blue_only": True},
+    "ScII5527": {"rest": 5527.0, "label": "Sc II 5527", "blue_only": True},
     "HeI5876": {"rest": 5875.6, "label": "He I 5876", "blue_only": True},
     "HeI6678": {"rest": 6678.2, "label": "He I 6678", "blue_only": True},
+    "HeI7065": {"rest": 7065.2, "label": "He I 7065", "blue_only": True},
     "OI7774": {"rest": 7774.0, "label": "O I 7774", "blue_only": True},
     "CaIINIR": {"rest": 8579.0, "label": "Ca II NIR triplet", "blue_only": True},
 }
@@ -57,10 +65,24 @@ HOST_LINES = {
 }
 
 PRIMARY_LINES_BY_TYPE = {
-    "ia": {"SiII6355", "CaIIHK"},
-    "ii": {"FeII5169", "Halpha"},
-    "ib": {"HeI5876", "HeI6678", "CaIIHK"},
-    "ic": {"OI7774", "CaIIHK", "FeII5169"},
+    "ia": {"SiII6355", "SiII5972", "CaIIHK"},
+    "ii": {"Halpha", "Hbeta", "FeII5169"},
+    "iin": {"Halpha", "Hbeta"},
+    "iib": {"Halpha", "HeI5876", "FeII5169"},
+    "ib": {"HeI5876", "HeI6678", "HeI7065"},
+    "ic": {"OI7774", "CaIIHK", "CaIINIR"},
+    "icbl": {"OI7774", "CaIIHK", "CaIINIR", "FeII5169"},
+}
+
+LINES_BY_TYPE = {
+    "ia": ["SiII6355", "SiII5972", "SII5640", "CaIIHK", "CaIINIR", "CII6580"],
+    "ii": ["Halpha", "Hbeta", "Hgamma", "FeII5169", "FeII5018", "FeII4924", "ScII5527", "CaIIHK", "CaIINIR"],
+    "iin": ["Halpha", "Hbeta", "Hgamma", "FeII5169", "CaIIHK"],
+    "iib": ["Halpha", "Hbeta", "HeI5876", "HeI6678", "HeI7065", "FeII5169", "CaIIHK", "CaIINIR"],
+    "ib": ["HeI5876", "HeI6678", "HeI7065", "CaIIHK", "CaIINIR", "OI7774"],
+    "ic": ["OI7774", "CaIIHK", "CaIINIR", "FeII5169", "CII6580"],
+    "icbl": ["OI7774", "CaIIHK", "CaIINIR", "FeII5169", "CII6580"],
+    "unknown": ["Halpha", "Hbeta", "SiII6355", "HeI5876", "OI7774", "CaIIHK", "CaIINIR"],
 }
 
 
@@ -90,6 +112,26 @@ def parse_datetime(value: object) -> pd.Timestamp:
     if value is None or str(value).strip() == "":
         return pd.NaT
     return pd.to_datetime(str(value).replace("T", " "), errors="coerce", utc=False)
+
+
+def canonical_sn_type(sn_type: object) -> str:
+    text = str(sn_type or "").lower().replace("-", " ").replace("_", " ")
+    compact = text.replace(" ", "")
+    if "ia" in compact:
+        return "ia"
+    if "iib" in compact:
+        return "iib"
+    if "iin" in compact:
+        return "iin"
+    if "icbl" in compact or "ic-b l" in text or "ic bl" in text:
+        return "icbl"
+    if "ib" in compact:
+        return "ib"
+    if "ic" in compact:
+        return "ic"
+    if compact.startswith("snii") or "snii" in compact or compact == "ii" or text.endswith(" ii") or " type ii" in text:
+        return "ii"
+    return "unknown"
 
 
 def load_tns_metadata(csv_path: Path) -> dict[str, dict[str, object]]:
@@ -152,31 +194,11 @@ def smooth_flux(flux: np.ndarray, preferred_window: int = 41) -> np.ndarray:
 
 
 def default_lines_for_type(sn_type: object) -> list[str]:
-    text = str(sn_type or "").lower()
-    if "ia" in text:
-        return ["SiII6355", "CaIIHK", "SII5640"]
-    if "iib" in text:
-        return ["Halpha", "Hbeta", "HeI5876", "FeII5169"]
-    if "iin" in text or " ii" in text or text.endswith("ii"):
-        return ["Halpha", "Hbeta", "FeII5169"]
-    if "ib" in text:
-        return ["HeI5876", "HeI6678", "CaIIHK"]
-    if "ic" in text:
-        return ["OI7774", "CaIIHK", "FeII5169"]
-    return ["Halpha", "SiII6355", "HeI5876"]
+    return LINES_BY_TYPE.get(canonical_sn_type(sn_type), LINES_BY_TYPE["unknown"])
 
 
 def primary_lines_for_type(sn_type: object) -> set[str]:
-    text = str(sn_type or "").lower()
-    if "ia" in text:
-        return PRIMARY_LINES_BY_TYPE["ia"]
-    if "iib" in text or " ii" in text or text.endswith("ii") or "iin" in text:
-        return PRIMARY_LINES_BY_TYPE["ii"]
-    if "ib" in text:
-        return PRIMARY_LINES_BY_TYPE["ib"]
-    if "ic" in text:
-        return PRIMARY_LINES_BY_TYPE["ic"]
-    return set()
+    return PRIMARY_LINES_BY_TYPE.get(canonical_sn_type(sn_type), set())
 
 
 def local_linear_continuum(wave: np.ndarray, flux: np.ndarray, edge_fraction: float = 0.18) -> np.ndarray:
