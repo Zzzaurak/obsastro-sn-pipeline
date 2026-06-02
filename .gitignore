@@ -14,7 +14,6 @@ env/
 # Output & data
 output/
 data/
-DASH_matches.txt
 
 # IDE / Editor
 .vscode/

@@ -11,6 +11,7 @@
 ```bash
 conda env create -f envs/environment_astro_env.yml
 conda activate astro_env
+python -m ipykernel install --user --name astro_env --display-name "Python (astro_env)"
 ```
 
 | 环境 | Python | 用途 |
@@ -19,9 +20,12 @@ conda activate astro_env
 | `tardis` | 3.13 | 可选 TARDIS 蒙特卡洛辐射传输模拟。 |
 
 `tardis` 环境下载地址：https://tardis-sn.github.io/tardis/installation.html
-仅 `notebooks/03_tardis_modeling_optional.ipynb` 依赖 `tardis` 环境；其他 notebook 和脚本都在 `astro_env` 中运行。
 
-`astro_env` 中 `numpy` 必须保持 `1.23.5`，因为 astrodash 与旧版 tensorflow 对新版 numpy 不兼容。环境文件已经锁定该版本；迁移到新电脑时不要手动混装。
+除可选 TARDIS 流程外，其他 notebook 和脚本都在 `astro_env` 中运行。可选 TARDIS 流程包括 `notebooks/03_tardis_modeling_optional.ipynb` 中真正运行模拟的 cells，以及 `scripts/download_tardis_atom_data.py`。
+
+`astro_env` 中 `numpy` 必须保持 `1.23.5`，因为 astrodash 与旧版 tensorflow 对新版 numpy 不兼容。环境文件已经在 conda 层和 pip 层同时锁定该版本；迁移到新电脑时不要手动混装。
+
+依赖入口以 `envs/environment_astro_env.yml` 为准；旧的 `requirements.txt` 已删除，避免同学用 pip 安装出缺少 Jupyter 组件或 numpy 版本不对的环境。
 
 ## 凭证与配置
 

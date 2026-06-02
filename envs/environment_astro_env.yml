@@ -4,9 +4,16 @@ channels:
   - defaults
 dependencies:
   - python=3.10
+  - numpy=1.23.5
   - matplotlib
   - pandas
   - scipy
+  - ipython
+  - ipykernel
+  - jupyterlab
+  - nbconvert
+  - nbformat
+  - pyyaml
   - pip
   - pip:
     - numpy==1.23.5    # <=1.23.5 required by astrodash; TF<2.16 also needs <1.24
