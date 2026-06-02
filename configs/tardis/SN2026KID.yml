@@ -1,0 +1,42 @@
+tardis_config_version: v1.0
+supernova:
+  luminosity_requested: 8.80 log_lsun
+  time_explosion: 15.0 day
+atom_data: /Users/ao/THU/astronomy/Observe_astronomy/hw/p2/sn-pipline/data/kurucz_cd23_chianti_H_He_latest.h5
+model:
+  structure:
+    type: specific
+    velocity:
+      start: 7937.5 km/s
+      stop: 17198.0 km/s
+      num: 20
+    density:
+      type: branch85_w7
+  abundances:
+    type: uniform
+    H: 0.7
+    He: 0.28
+    O: 0.01
+    Si: 0.005
+    S: 0.005
+plasma:
+  ionization: lte
+  excitation: lte
+  radiative_rates_type: dilute-blackbody
+  line_interaction_type: macroatom
+montecarlo:
+  seed: 23111963
+  no_of_packets: 5.0e4
+  iterations: 10
+  last_no_of_packets: 1.0e5
+  no_of_virtual_packets: 3
+  convergence_strategy:
+    type: damped
+    damping_constant: 0.5
+    threshold: 0.05
+    lock_t_inner_cycles: 1
+    t_inner_update_exponent: -0.5
+spectrum:
+  start: 500 angstrom
+  stop: 20000 angstrom
+  num: 10000

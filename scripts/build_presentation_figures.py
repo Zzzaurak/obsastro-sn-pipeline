@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 
@@ -20,6 +21,10 @@ import pandas as pd
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from src import spectral_notebook_tools as snt
+
 ANALYSIS_DIR = PROJECT_ROOT / "output" / "analysis_pipeline"
 ANALYSIS_FIG_DIR = ANALYSIS_DIR / "figures"
 PPT_DIR = PROJECT_ROOT / "ppt"
@@ -80,7 +85,9 @@ def build_analysis_flow() -> Path:
 
 
 def build_target_table_figure() -> Path:
-    status = pd.read_csv(ANALYSIS_DIR / "target_status.csv")
+    status = snt.read_combined_analysis_products(ANALYSIS_DIR, "target_status.csv")
+    if status.empty:
+        raise FileNotFoundError("No target_status.csv or *_target_status.csv found. Run notebook 02 or scripts/build_analysis_products.py first.")
     cols = ["target", "type", "z", "n_spectra", "phase_min_days", "phase_max_days", "adopted_lines"]
     table = status[cols].copy()
     for col in ["z", "phase_min_days", "phase_max_days"]:
@@ -115,16 +122,26 @@ def build_spectral_montage() -> Path:
 
 
 def build_tardis_comparison() -> Path | None:
-    for target in ["SN2026jlm", "SN2026kie"]:
-        spectrum_dir = PROJECT_ROOT / "output" / target / "spectrum"
-        tardis_dir = PROJECT_ROOT / "output" / target / "tardis"
-        observed_files = sorted(spectrum_dir.glob("*.dat"))
+    spectra, _ = snt.load_observed_spectra(PROJECT_ROOT, target_metadata={})
+    status = snt.read_combined_analysis_products(ANALYSIS_DIR, "target_status.csv")
+    for tardis_dir in sorted((PROJECT_ROOT / "output").glob("SN*/tardis")):
+        target = snt.target_key(tardis_dir.parent.name)
+        observed_items = sorted(
+            [spec for spec in spectra if spec["target"] == target],
+            key=lambda spec: pd.Timestamp.max if pd.isna(spec["date_obs"]) else spec["date_obs"],
+        )
         tardis_files = sorted(tardis_dir.glob("tardis_spectrum_*.dat"))
-        if not observed_files or not tardis_files:
+        if not observed_items or not tardis_files:
             continue
-        observed = np.loadtxt(observed_files[0])
         simulated = np.loadtxt(tardis_files[0])
-        wave_obs, flux_obs = observed[:, 0], normalize_flux(observed[:, 1])
+        z = np.nan
+        if not status.empty and "target" in status.columns and "z" in status.columns:
+            z_values = pd.to_numeric(status[status["target"].eq(target)]["z"], errors="coerce").dropna()
+            if not z_values.empty:
+                z = float(z_values.iloc[0])
+        observed = observed_items[0]
+        wave_obs = snt.observed_to_rest(observed["wave"], z)
+        flux_obs = normalize_flux(observed["flux"])
         wave_sim, flux_sim = simulated[:, 0], normalize_flux(simulated[:, 1])
         plt.figure(figsize=(9.5, 4.8))
         plt.plot(wave_obs, flux_obs, lw=0.9, label="Observed spectrum")

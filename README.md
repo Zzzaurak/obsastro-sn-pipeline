@@ -4,6 +4,47 @@
 
 本项目围绕一组新近超新星目标，完成从观测准备到稀疏光谱分析、报告 notebook 和英文汇报 slides 的可复现流程。当前版本的核心思路是：数据获取和观测准备自动化，光谱诊断集中到一个稳定 pipeline，TARDIS 只作为定性解释辅助。
 
+## 环境
+
+推荐用 Conda 一键创建主环境：
+
+```bash
+conda env create -f envs/environment_astro_env.yml
+conda activate astro_env
+```
+
+| 环境 | Python | 用途 |
+|---|---|---|
+| `astro_env` | 3.10 | 主流水线、TNS/Lasair/WISeREP、找星图、光谱下载与绘图、astrodash、批量光谱分析。 |
+| `tardis` | 3.13 | 可选 TARDIS 蒙特卡洛辐射传输模拟。 |
+
+`tardis` 环境下载地址：https://tardis-sn.github.io/tardis/installation.html
+仅 `notebooks/03_tardis_modeling_optional.ipynb` 依赖 `tardis` 环境；其他 notebook 和脚本都在 `astro_env` 中运行。
+
+`astro_env` 中 `numpy` 必须保持 `1.23.5`，因为 astrodash 与旧版 tensorflow 对新版 numpy 不兼容。环境文件已经锁定该版本；迁移到新电脑时不要手动混装。
+
+## 凭证与配置
+
+`.env` 不提交 git，用于保存本地凭证：
+
+```env
+TNS_USER_ID=
+TNS_USER_NAME=
+LASAIR_API_TOKEN=
+LASAIR_TOKEN=
+WISEREP_API_KEY=
+```
+
+当前 TNS 使用 user 模式：下载 TNS 公共目录 CSV，并抓取目标网页补充最新测光和找星图。TNS bot API 不是当前流程的依赖。
+
+观测参数集中在 `configs/sn_parameter.json`：
+
+- `observing`: 目标名、日期、站址、最低高度角、太阳高度限制、时间分辨率。
+- `tns`: 是否启用 TNS、是否下载 TNS 文件。
+- `lasair`: 是否启用 Lasair 光变曲线。
+- `wiserep`: 是否启用 WISeREP 光谱。
+- `output`: 输出目录、找星图视场。
+
 ## 当前主流程
 
 ```bash
@@ -48,8 +89,7 @@ sn-pipline/
 │   ├── 01_data_collection_and_observing.ipynb
 │   ├── 02_spectral_analysis_pipeline.ipynb
 │   ├── 03_tardis_modeling_optional.ipynb
-│   ├── 04_project_report.ipynb
-│   └── legacy/                    # 旧版探索 notebook 归档
+│   └── 04_project_report.ipynb
 ├── output/                        # 每个目标和 analysis_pipeline 的输出；不提交 git
 ├── paper/                         # 文献调研与阅读材料
 ├── ppt/                           # 英文最终汇报 LaTeX slides
@@ -64,7 +104,7 @@ sn-pipline/
 | `fetch_target_params.py` | 原有 | 读取 `configs/sn_parameter.json`，调用主观测流水线，获取 TNS 目标信息，计算观测窗口，生成观测报告和找星图。等价入口：`python -m src.pipeline`。 |
 | `fetch_aux_data.py` | 原有 | 读取 `.env` 和配置，下载 Lasair/ZTF 光变曲线与 WISeREP 光谱，保存 CSV、图片和清洁 `.dat` 光谱。等价入口：`python -m src.fetch_aux_data`。 |
 | `build_analysis_products.py` | 新增 | 调用 `src.spectral_pipeline.build_all()`，批量读取 `data/SN*/` 的一维 FITS 光谱，生成目标状态、谱线速度、pEW/FWHM、黑体颜色温度、宿主线指标和质检标记。 |
-| `build_presentation_figures.py` | 新增 | 从 `output/analysis_pipeline/figures/` 复制或重组 slides 需要的图，写到 `ppt/figures/`，例如流程图、目标表、光谱序列拼图和可选 TARDIS 对比图。 |
+| `build_presentation_figures.py` | 新增 | 从 `output/analysis_pipeline/figures/` 复制或重组 slides 需要的图，写到 `ppt/figures/`；读取目标状态时会兼容 `SN2026KID_target_status.csv` 这类逐目标调参产物。 |
 | `create_deliverable_notebooks.py` | 新增 | 从脚本源头重新生成 4 个精简 notebook，使 notebook 结构稳定、说明文字统一为中文，并避免旧探索 notebook 混入正式流程。 |
 | `download_tardis_atom_data.py` | 原有 | 首次运行 TARDIS 前下载 `kurucz_cd23_chianti_H_He_latest.h5` 到 `data/`，并更新 TARDIS 内部配置指向项目数据目录。 |
 
@@ -88,8 +128,8 @@ sn-pipline/
 | Notebook | 用途 |
 |---|---|
 | `01_data_collection_and_observing.ipynb` | 目标获取、观测准备、TNS/Lasair/WISeREP 输出盘点。 |
-| `02_spectral_analysis_pipeline.ipynb` | 主光谱分析 pipeline：FITS 读取、速度、pEW/FWHM、黑体温度、宿主线指标和质检标记。 |
-| `03_tardis_modeling_optional.ipynb` | 可选 TARDIS 定性比较；只用于 line ID 和谱形解释，不作为强物理约束。 |
+| `02_spectral_analysis_pipeline.ipynb` | 主光谱分析和手动调参入口：FITS 读取、手动红移、自动选线、速度、pEW/FWHM、黑体温度、宿主线指标和质检标记；`SAVE_PRODUCTS/SAVE_FIGURES=True` 时默认写出带目标名前缀的产物。 |
+| `03_tardis_modeling_optional.ipynb` | 可选 TARDIS 配置与模拟入口；从本地 FITS 和 02 的分析产物估计起始参数，不依赖 legacy notebook 或遗留数据。 |
 | `04_project_report.ipynb` | 中文报告 notebook，汇总科学问题、数据、分析、解释和结论。 |
 
 旧版探索 notebook 已移到 `notebooks/legacy/`，用于追溯早期手动步骤，不再作为正式复现入口。
@@ -118,54 +158,16 @@ output/SN2026fov/
 
 批量分析输出保存在 `output/analysis_pipeline/`：
 
-- `spectra_summary.csv`
-- `line_diagnostics_raw.csv`
-- `line_diagnostics_qc.csv`
-- `blackbody_temperature.csv`
-- `host_environment_lines.csv`
-- `host_environment_summary.csv`
-- `target_status.csv`
+- `spectra_summary.csv` 或 `<RUN_TAG>_spectra_summary.csv`
+- `line_diagnostics_raw.csv` 或 `<RUN_TAG>_line_diagnostics_raw.csv`
+- `line_diagnostics_qc.csv` 或 `<RUN_TAG>_line_diagnostics_qc.csv`
+- `blackbody_temperature.csv` 或 `<RUN_TAG>_blackbody_temperature.csv`
+- `host_environment_lines.csv` 或 `<RUN_TAG>_host_environment_lines.csv`
+- `host_environment_summary.csv` 或 `<RUN_TAG>_host_environment_summary.csv`
+- `target_status.csv` 或 `<RUN_TAG>_target_status.csv`
 - `figures/*.png`
 
-这些表和图是 `02_spectral_analysis_pipeline.ipynb`、`04_project_report.ipynb` 和 `ppt/` 的主要输入。
-
-## 环境
-
-推荐用 Conda 一键创建主环境：
-
-```bash
-conda env create -f envs/environment_astro_env.yml
-conda activate astro_env
-```
-
-| 环境 | Python | 用途 |
-|---|---|---|
-| `astro_env` | 3.10 | 主流水线、TNS/Lasair/WISeREP、找星图、光谱下载与绘图、astrodash、批量光谱分析。 |
-| `tardis` | 3.13 | 可选 TARDIS 蒙特卡洛辐射传输模拟。 |
-
-`astro_env` 中 `numpy` 必须保持 `1.23.5`，因为 astrodash 与旧版 tensorflow 对新版 numpy 不兼容。环境文件已经锁定该版本；迁移到新电脑时不要手动混装。
-
-## 凭证与配置
-
-`.env` 不提交 git，用于保存本地凭证：
-
-```env
-TNS_USER_ID=
-TNS_USER_NAME=
-LASAIR_API_TOKEN=
-LASAIR_TOKEN=
-WISEREP_API_KEY=
-```
-
-当前 TNS 使用 user 模式：下载 TNS 公共目录 CSV，并抓取目标网页补充最新测光和找星图。TNS bot API 不是当前流程的依赖。
-
-观测参数集中在 `configs/sn_parameter.json`：
-
-- `observing`: 目标名、日期、站址、最低高度角、太阳高度限制、时间分辨率。
-- `tns`: 是否启用 TNS、是否下载 TNS 文件。
-- `lasair`: 是否启用 Lasair 光变曲线。
-- `wiserep`: 是否启用 WISeREP 光谱。
-- `output`: 输出目录、找星图视场。
+`scripts/build_analysis_products.py` 生成无前缀的全量批处理产物。`02_spectral_analysis_pipeline.ipynb` 中 `OUTPUT_TAG=""` 时会自动用当前目标名作为 `RUN_TAG`；同一目标重跑会覆盖同一目标文件，但不会覆盖其他目标的文件。`01/03/04` 和展示图脚本会优先读取目标化产物，再回退到无前缀批处理产物。
 
 ## TARDIS 可选流程
 
@@ -176,12 +178,12 @@ conda activate tardis
 python scripts/download_tardis_atom_data.py
 ```
 
-然后使用 `notebooks/03_tardis_modeling_optional.ipynb` 或旧版归档 notebook 中的手动流程。当前安装的是 TARDIS v2 dev，API 与网上很多 v1 示例不同；关键差异见 `AGENTS.md`。
+然后使用 `notebooks/03_tardis_modeling_optional.ipynb`。该 notebook 会从本地 FITS 和 02 的 `*_manual_redshift_summary.csv`、`*_target_status.csv`、`*_line_diagnostics_qc.csv` 等产物估计第一版 `z/type/velocity/time_explosion/luminosity`，生成 `configs/tardis/<target>.yml`，并在 `RUN_TARDIS=True` 时运行模拟。旧版归档 notebook 只作追溯，不是复现依赖。当前安装的是 TARDIS v2 dev，API 与网上很多 v1 示例不同；关键差异见 `AGENTS.md`。
 
 ## 注意事项
 
 - 不要提交 `.env`、`data/`、`output/` 或真实凭证。
-- 自动谱线测量只适合作为第一版结果；正式引用速度、pEW 或 FWHM 前，应检查 `line_diagnostics_qc.csv` 中的 `qc_flag`，并人工确认 `check` 项。
+- 自动谱线测量只适合作为第一版结果；正式引用速度、pEW 或 FWHM 前，应检查 `line_diagnostics_qc.csv` 或 `<RUN_TAG>_line_diagnostics_qc.csv` 中的 `qc_flag`，并人工确认 `check` 项。
 - `ppt/` 是英文最终展示；中文 notebook 和 README 是为了方便组内复现与写作。
 - 如果修改 notebook 结构，优先改 `scripts/create_deliverable_notebooks.py` 后重新生成，不要只手改 `.ipynb`。
 
@@ -192,10 +194,10 @@ python scripts/download_tardis_atom_data.py
 | 优先级 | 状态 | 后续工作 | 说明 |
 |---|---|---|---|
 | 高 | 未完成 | 人工检查 `qc_flag=check` 的谱线测量 | 自动 pipeline 已输出速度、pEW、FWHM，但 `check` 项可能受噪声、天光残差、线混合或局部连续谱影响。正式报告里只应引用人工确认后的数值。 |
-| 高 | 未完成 | 为每个目标确定最终采用的类型、红移和相位 | 当前 `target_status.csv` 是第一版综合表。需要结合 TNS、DASH/Superfit、谱线识别和光变曲线，确定报告中的最终值。 |
+| 高 | 未完成 | 为每个目标确定最终采用的类型、红移和相位 | 当前 `target_status.csv` / `<RUN_TAG>_target_status.csv` 是第一版综合表。需要结合 TNS、DASH/Superfit、谱线识别和光变曲线，确定报告中的最终值。 |
 | 高 | 未完成 | 替换 slides/report 中的 `TBD by group` 分工占位 | 需要填入真实组员姓名和贡献。 |
 | 中 | 部分完成 | 宿主星系/环境诊断 | 已有 `host_environment_lines.csv` 和 `host_environment_summary.csv`，但这些是窄线/指数级别的粗略指标。若要讨论消光或宿主环境，需要检查谱线拟合、通量定标和 Balmer decrement 的可靠性。 |
-| 中 | 部分完成 | TARDIS 建模 | 已保留可选定性比较流程，但还不是自动拟合器。当前只能辅助 line ID 和谱形解释，不应给出强的抛射物质量、丰度或爆炸能量约束。 |
+| 中 | 部分完成 | TARDIS 建模 | `03_tardis_modeling_optional.ipynb` 已能从当前项目产物生成配置并可选运行模拟，但还不是自动拟合器。当前只能辅助 line ID 和谱形解释，不应给出强的抛射物质量、丰度或爆炸能量约束。 |
 | 中 | 待完善 | 把人工确认后的最终科学表单独固化 | 建议新增一个人工维护的 `output/analysis_pipeline/final_adopted_measurements.csv` 或同名 notebook 表格，明确哪些数值进入最终报告。 |
 | 低 | 待完善 | 生成逐条谱线局部检查图 | 可以为 `line_diagnostics_qc.csv` 的每一行自动画局部窗口，标出连续谱、吸收谷、pEW 区间和采用/拒绝理由，方便审稿式检查。 |
 | 低 | 待完善 | 让 README 和 `AGENTS.md` 持续同步 | README 给人看，`AGENTS.md` 给 AI/自动化看。后续如果新增脚本、改 notebook 结构或改变主流程，两边都要更新。 |

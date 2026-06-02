@@ -24,8 +24,8 @@ python scripts/build_presentation_figures.py
 python scripts/create_deliverable_notebooks.py
 ```
 
-- Main scientific tables are under `output/analysis_pipeline/*.csv`.
-- Main scientific figures are under `output/analysis_pipeline/figures/*.png`.
+- Main scientific tables are under `output/analysis_pipeline/*.csv`. Batch script outputs are unprefixed; interactive `02` runs can write `<RUN_TAG>_*.csv` to avoid overwriting other targets.
+- Main scientific figures are under `output/analysis_pipeline/figures/*.png`. Interactive `02` shared science figures can write `<RUN_TAG>_*.png`.
 - Slide-specific copies/composites are under `ppt/figures/`.
 - Final slides under `ppt/` must stay English.
 - README and top-level notebooks can use Chinese explanatory text.
@@ -165,8 +165,8 @@ TARDIS simulation baseline for Type Ia SNe. YAML config with 7 sections (keys re
 - **TARDIS atom data**: `data/kurucz_cd23_chianti_H_He_latest.h5` (~212 MB) — Kurucz CD23 + CHIANTI atomic data; downloaded once, shared by all simulations
 - **TARDIS simulation spectrum**: `output/{target}/tardis/tardis_spectrum_{target}.dat` — 2-column ASCII (rest-frame wavelength A, luminosity density erg/s/A); 10000 points on 500-20000 A grid
 - **TARDIS per-target config**: `output/{target}/tardis/tardis_config_{target}.yml` — copy of the YAML config used for reproducibility
-- **Analysis pipeline tables**: `output/analysis_pipeline/*.csv` — target status, spectra summary, line diagnostics with QC flags, blackbody color temperature, host-environment line indices
-- **Analysis pipeline figures**: `output/analysis_pipeline/figures/*.png` — target table, spectral sequences, velocity evolution, pEW evolution, color-temperature proxy, host-line detections
+- **Analysis pipeline tables**: `output/analysis_pipeline/*.csv` — target status, spectra summary, line diagnostics with QC flags, blackbody color temperature, host-environment line indices. `scripts/build_analysis_products.py` writes unprefixed batch names; `notebooks/02_spectral_analysis_pipeline.ipynb` writes `<RUN_TAG>_*.csv` when saving interactively.
+- **Analysis pipeline figures**: `output/analysis_pipeline/figures/*.png` — target table, spectral sequences, velocity evolution, pEW evolution, color-temperature proxy, host-line detections. Interactive 02 outputs use target tags for shared summary figures.
 - **Presentation figures**: `ppt/figures/*.png` — slide-ready copies/composites generated from analysis outputs
 
 ## Conda Environments
@@ -227,22 +227,22 @@ TARDIS simulation baseline for Type Ia SNe. YAML config with 7 sections (keys re
 
 ## TARDIS Simulation Flow
 
-The current top-level TARDIS entry point is `notebooks/03_tardis_modeling_optional.ipynb`. Older manual TARDIS work is preserved under `notebooks/legacy/`. Run this only in the `tardis` kernel/environment and treat it as qualitative support rather than the primary science pipeline.
+The current top-level TARDIS entry point is `notebooks/03_tardis_modeling_optional.ipynb`. It should not depend on `notebooks/legacy/` or legacy data: it reads local `data/SN*/` FITS spectra and 02 analysis products such as `<RUN_TAG>_manual_redshift_summary.csv`, `<RUN_TAG>_target_status.csv`, and `<RUN_TAG>_line_diagnostics_qc.csv`. Older manual TARDIS work is preserved under `notebooks/legacy/` only for provenance. Run this only in the `tardis` kernel/environment and treat it as qualitative support rather than the primary science pipeline.
 
-1. **Load observed spectrum** — reads `output/{target}/spectrum/spectrum_*.dat` (2-column: wavelength_A, flux)
-2. **Set target parameters** — user provides redshift, SN type (Ia/II/Ibc), DASH age (days from peak), DASH velocity (km/s). Notebook auto-computes:
-   - `epoch_days` = dash_age + 18 (Ia) or +15 (II) — time since explosion
-   - `luminosity_requested` — from apparent magnitude + luminosity distance via Planck18 cosmology → log(Lsun)
-   - `velocity start/stop` — inner boundary ~0.7×v_phot, outer ~1.3×v_exp
-3. **Build YAML config** — loads `configs/tardis/base_Ia.yml` template, overrides supernova/model/velocity params, adjusts abundances for non-Ia types, writes to `configs/tardis/{TARGET}.yml`
+1. **Load observed spectrum** — reads local one-dimensional FITS spectra from `data/SN*/`, not legacy `.dat` files.
+2. **Estimate target parameters from 02 products** — notebook uses manual redshift summary, target status, and QC line diagnostics when available; manual overrides remain available for redshift, type, velocity, epoch, apparent magnitude, and log luminosity.
+   - `epoch_days` starts from manual override, otherwise median `phase_days` plus a type-dependent rise-time default.
+   - `luminosity_requested` starts from manual log(Lsun), or apparent magnitude + Planck18 luminosity distance, or a conservative type default.
+   - `velocity start/stop` starts from adopted/check line velocity; for Ia, the photospheric proxy uses ~0.7×line velocity.
+3. **Build YAML config** — loads `configs/tardis/base_Ia.yml` template, overrides supernova/model/velocity params, adjusts rough abundances for non-Ia families, writes to `configs/tardis/{TARGET}.yml`
 4. **Check atomic data** — verifies `data/kurucz_cd23_chianti_H_He_latest.h5` exists (~212 MB); if missing, instructs user to run `scripts/download_tardis_atom_data.py`
 5. **Run simulation** — `run_tardis(config_path, show_convergence_plots=False, log_level="WARNING")` → returns `Simulation` object
-6. **Compare spectra** — de-redshifts observed spectrum to rest frame, normalises both, plots overlay + residual in 2-panel figure
-7. **Save results** — writes TARDIS spectrum `.dat` and config copy to `output/{target}/tardis/`
+6. **Compare spectra** — de-redshifts selected local FITS spectrum to rest frame, normalises both, plots overlay + residual in 2-panel figure
+7. **Save results** — writes TARDIS spectrum `.dat`, comparison PNG, and config copy to `output/{target}/tardis/`
 
-**Notebook metadata:** use the `tardis` environment/kernel for TARDIS cells. The compact optional notebook currently loads observed and simulated spectra from `output/{target}/spectrum/` and `output/{target}/tardis/`.
+**Notebook metadata:** use the `tardis` environment/kernel for TARDIS cells. Keep `RUN_TARDIS=False` while checking configuration; set it to `True` only when the TARDIS environment and atom data are ready.
 
-**Switching targets:** change the `TARGET` variable in `notebooks/03_tardis_modeling_optional.ipynb`; the notebook reads the first matching `.dat` observed spectrum and `tardis_spectrum_*.dat` model output for that target.
+**Switching targets:** change the `TARGET`, `ANALYSIS_TAG`, and `SPECTRUM_INDEX` variables in `notebooks/03_tardis_modeling_optional.ipynb`.
 
 ## TARDIS API v2 Notes (CRITICAL)
 
@@ -300,8 +300,8 @@ Current top-level notebooks are curated deliverables. Older exploratory notebook
 | Notebook | Role |
 |----------|------|
 | `notebooks/01_data_collection_and_observing.ipynb` | Target metadata, observing preparation, and product inventory. Remote refresh is opt-in. |
-| `notebooks/02_spectral_analysis_pipeline.ipynb` | Main reproducible spectral pipeline notebook; calls `src.spectral_pipeline.build_all()` and displays CSV/figure outputs. |
-| `notebooks/03_tardis_modeling_optional.ipynb` | Optional qualitative TARDIS comparison only; use for line-ID/shape interpretation, not strong physical constraints. |
+| `notebooks/02_spectral_analysis_pipeline.ipynb` | Main interactive spectral diagnostics notebook; reads local FITS, supports manual redshift checks, type-aware automatic line selection, target-tagged CSV/figure output, and local diagnostic plots. |
+| `notebooks/03_tardis_modeling_optional.ipynb` | Optional self-contained TARDIS setup/simulation notebook; uses local FITS and 02 products for starting parameters, no legacy dependency. |
 | `notebooks/04_project_report.ipynb` | Chinese P2Rp2-style report notebook with question, data, analysis, figures, interpretation, conclusions, and contribution placeholders. |
 
 Legacy notebooks in `notebooks/legacy/` include earlier DASH, Superfit, spectral reduction, normalization, diagnostics, and TARDIS experiments. They are useful for provenance but not for final reproducibility.
@@ -309,9 +309,9 @@ Legacy notebooks in `notebooks/legacy/` include earlier DASH, Superfit, spectral
 ## Current Analysis Status
 
 - Completed first-pass automation: multi-epoch spectral sequences, type-aware line velocity measurements, pEW/FWHM/depth, blackbody color-temperature proxy, host-line indices, target-level summary, and report-ready figures.
-- Still partial: TARDIS modeling is qualitative only and not an automatic physical fitter.
+- Still partial: TARDIS modeling is qualitative only and not an automatic physical fitter, but the top-level 03 workflow is now self-contained from current project data/products.
 - Still partial: host extinction/environment diagnostics are rough line-index outputs, not fully flux-calibrated environmental measurements.
-- Still required before final science claims: inspect `line_diagnostics_qc.csv`, especially `qc_flag=check`, and maintain a final adopted-measurements table for values used in reports/slides.
+- Still required before final science claims: inspect `line_diagnostics_qc.csv` or `<RUN_TAG>_line_diagnostics_qc.csv`, especially `qc_flag=check`, and maintain a final adopted-measurements table for values used in reports/slides.
 
 ## Testing
 

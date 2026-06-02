@@ -286,16 +286,21 @@ OBSERVING_NOTEBOOK = [
         """
         ## 光谱分析 pipeline 给出的目标状态
 
-        运行 `02_spectral_analysis_pipeline.ipynb` 或 `scripts/build_analysis_products.py` 后，这里会显示最新的目标状态表。
+        运行 `02_spectral_analysis_pipeline.ipynb` 后，单目标调参输出会带目标名前缀；运行 `scripts/build_analysis_products.py` 后可能还有旧的全量无前缀表。这里按目标合并读取最新可用版本。
         """
     ),
     code(
         """
-        status_path = ANALYSIS_DIR / "target_status.csv"
-        if status_path.exists():
-            display(pd.read_csv(status_path))
+        status_table = snt.read_combined_analysis_products(ANALYSIS_DIR, "target_status.csv")
+        status_products = snt.find_analysis_products(ANALYSIS_DIR, "target_status.csv")
+
+        if status_table.empty:
+            print(f"缺少 target_status.csv 或 *_target_status.csv。请先运行光谱分析 pipeline。")
         else:
-            print(f"缺少 {status_path}。请先运行光谱分析 pipeline。")
+            print("读取到的目标状态产物（新到旧）：")
+            for path in status_products[:8]:
+                print(f"- {path.name}")
+            display(status_table)
         """
     ),
 ]
@@ -346,6 +351,7 @@ SPECTRAL_NOTEBOOK = [
         - `TARGET_LINES`：为某个目标手动覆盖要测的谱线；留空时按 SN 类型自动选择关键谱线。
         - `AUTO_CLASSIFY_TYPES`：没有手动类型时，使用本地光谱经验粗分类结果给 02 自动选线。
         - `LINE_PARAM_OVERRIDES`：按谱线、目标+谱线、目标+文件+谱线覆盖半宽、平滑窗口、连续谱边缘比例。
+        - `OUTPUT_TAG`：空字符串时自动使用当前目标名；`SAVE_PRODUCTS=True`/`SAVE_FIGURES=True` 只会覆盖同一 tag 的输出，不会覆盖其他目标的输出。
         - 红移检查第 4 节里只改“选取的发射线”、“手动观测波长”和 `REDSHIFT_SPECTRUM_INDEX`。
         - `CHECK_*`：控制最后的单条谱线局部检查图。
 
@@ -388,9 +394,10 @@ SPECTRAL_NOTEBOOK = [
             # ("SN2026JLM", "SN2026jlm_bfosc_20260510.fits", "SiII6355"): {"edge_fraction": 0.22},
         }
 
-        SAVE_PRODUCTS = False  # 红移确认前建议先别覆盖 output/analysis_pipeline/*.csv
-        SAVE_FIGURES = True
-        PRODUCT_PREFIX = ""  # 例如 "trial_" 可避免覆盖正式 CSV
+        SAVE_PRODUCTS = False  # 写出 CSV；同一 RUN_TAG 会覆盖，自动目标 tag 不会覆盖别的目标
+        SAVE_FIGURES = True  # 写出 PNG；同一 RUN_TAG 会覆盖，自动目标 tag 不会覆盖别的目标
+        PRODUCT_PREFIX = ""  # 例如 "trial" 可在目标 tag 前再加一层前缀
+        OUTPUT_TAG = ""  # 空字符串表示自动用当前目标名，例如 SN2026KID；也可手动填 "trial_SN2026KID"
 
         FIT_VISUAL_GAUSSIAN = True  # 只用于局部检查图的可视化，不作为强物理模型
         DIAGNOSTIC_TARGET = None  # 图形诊断网格只看某个目标；None 表示全部
@@ -595,6 +602,9 @@ SPECTRAL_NOTEBOOK = [
         display(template_target_table)
         display(rough_target_table)
         display(snt.selected_line_plan(spectra, TARGET_LINES))
+
+        RUN_TAG = snt.analysis_output_tag(summary[["target"]], OUTPUT_TAG)
+        print(f"analysis output tag = {RUN_TAG}")
         """
     ),
     md(
@@ -667,6 +677,7 @@ SPECTRAL_NOTEBOOK = [
             max_panels=MAX_DIAGNOSTIC_PANELS,
             fig_dir=FIG_DIR,
             save_figures=SAVE_FIGURES,
+            filename_tag=RUN_TAG,
             **measure_kwargs,
         )
         snt.show_figure(line_diagnostics_fig)
@@ -687,6 +698,7 @@ SPECTRAL_NOTEBOOK = [
             wave_range=BB_WAVE_RANGE,
             fig_dir=FIG_DIR,
             save_figures=SAVE_FIGURES,
+            filename_tag=RUN_TAG,
         )
         snt.show_figure(blackbody_fit_fig)
         """
@@ -694,28 +706,28 @@ SPECTRAL_NOTEBOOK = [
     md("## 10. 科学量图：谱线速度\n\n方法说明：本步只绘制第 7 节已经测出的速度，不再做新拟合。"),
     code(
         """
-        velocity_fig = snt.plot_quantity_by_target(line_qc, "velocity_kms", "Velocity (km/s)", "Line velocity evolution", "line_velocity_evolution.png", FIG_DIR, save_figures=SAVE_FIGURES)
+        velocity_fig = snt.plot_quantity_by_target(line_qc, "velocity_kms", "Velocity (km/s)", "Line velocity evolution", snt.tagged_filename("line_velocity_evolution.png", RUN_TAG), FIG_DIR, save_figures=SAVE_FIGURES)
         snt.show_figure(velocity_fig)
         """
     ),
     md("## 11. 科学量图：pseudo-equivalent width\n\n方法说明：本步只绘制第 7 节由局部线性连续谱归一化后积分得到的 pEW，不再做新拟合。"),
     code(
         """
-        pew_fig = snt.plot_quantity_by_target(line_qc, "pEW_A", "pEW (Angstrom)", "Pseudo-equivalent width evolution", "pew_evolution.png", FIG_DIR, save_figures=SAVE_FIGURES)
+        pew_fig = snt.plot_quantity_by_target(line_qc, "pEW_A", "pEW (Angstrom)", "Pseudo-equivalent width evolution", snt.tagged_filename("pew_evolution.png", RUN_TAG), FIG_DIR, save_figures=SAVE_FIGURES)
         snt.show_figure(pew_fig)
         """
     ),
     md("## 12. 科学量图：FWHM\n\n方法说明：本步只绘制第 7 节由吸收线半深度宽度估计出的 FWHM，不再做新拟合。"),
     code(
         """
-        fwhm_fig = snt.plot_quantity_by_target(line_qc, "FWHM_A", "FWHM (Angstrom)", "Line FWHM evolution", "fwhm_evolution.png", FIG_DIR, save_figures=SAVE_FIGURES)
+        fwhm_fig = snt.plot_quantity_by_target(line_qc, "FWHM_A", "FWHM (Angstrom)", "Line FWHM evolution", snt.tagged_filename("fwhm_evolution.png", RUN_TAG), FIG_DIR, save_figures=SAVE_FIGURES)
         snt.show_figure(fwhm_fig)
         """
     ),
     md("## 13. 科学量图：线深\n\n方法说明：本步只绘制第 7 节由归一化谱线谷值计算出的线深，不再做新拟合。"),
     code(
         """
-        depth_fig = snt.plot_quantity_by_target(line_qc, "depth", "Line depth", "Absorption-line depth evolution", "line_depth_evolution.png", FIG_DIR, save_figures=SAVE_FIGURES)
+        depth_fig = snt.plot_quantity_by_target(line_qc, "depth", "Line depth", "Absorption-line depth evolution", snt.tagged_filename("line_depth_evolution.png", RUN_TAG), FIG_DIR, save_figures=SAVE_FIGURES)
         snt.show_figure(depth_fig)
         """
     ),
@@ -735,7 +747,7 @@ SPECTRAL_NOTEBOOK = [
             ax.set_title("Continuum blackbody color-temperature estimate")
             ax.grid(alpha=0.25)
             ax.legend(fontsize=8)
-            snt.save_figure(fig, FIG_DIR, "blackbody_temperature.png", enabled=SAVE_FIGURES)
+            snt.save_figure(fig, FIG_DIR, snt.tagged_filename("blackbody_temperature.png", RUN_TAG), enabled=SAVE_FIGURES)
             snt.show_figure(fig)
         display(bb_df)
         """
@@ -743,7 +755,7 @@ SPECTRAL_NOTEBOOK = [
     md("## 15. 科学量图：宿主/环境窄线指标\n\n方法说明：宿主线指标使用红移后的窄窗口，局部两侧窗口取中位数连续谱，用 MAD/标准差估计噪声，并积分线区通量；这里不做高斯拟合，也不能替代严格流量定标的环境诊断。"),
     code(
         """
-        host_line_fig = snt.plot_host_line_grid(host_lines, target=DIAGNOSTIC_TARGET, fig_dir=FIG_DIR, save_figures=SAVE_FIGURES)
+        host_line_fig = snt.plot_host_line_grid(host_lines, target=DIAGNOSTIC_TARGET, fig_dir=FIG_DIR, save_figures=SAVE_FIGURES, filename_tag=RUN_TAG)
         snt.show_figure(host_line_fig)
         display(host_summary)
         display(host_lines)
@@ -790,12 +802,12 @@ SPECTRAL_NOTEBOOK = [
         display(check_result)
         """
     ),
-    md("## 17. 保存 CSV 汇总\n\n方法说明：本节只把前面已经算出的表格写入 CSV，不运行新的拟合或重新测量。"),
+    md("## 17. 保存 CSV 汇总\n\n方法说明：本节只把前面已经算出的表格写入 CSV，不运行新的拟合或重新测量。输出文件会使用 `RUN_TAG`，例如 `SN2026KID_line_diagnostics_qc.csv`；同一目标重跑会覆盖同一目标文件，但不会覆盖其他目标。"),
     code(
         """
         def output_path(name):
             ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
-            return ANALYSIS_DIR / f"{PRODUCT_PREFIX}{name}"
+            return snt.analysis_output_path(ANALYSIS_DIR, name, tag=RUN_TAG, product_prefix=PRODUCT_PREFIX)
 
 
         if SAVE_PRODUCTS:
@@ -848,79 +860,245 @@ SPECTRAL_NOTEBOOK = [
 TARDIS_NOTEBOOK = [
     md(
         """
-        # 03 可选 TARDIS 建模
+# 03 可选 TARDIS 建模
 
-        这个 notebook 的定位刻意收窄。文献调研说明，稀疏光谱样本不适合过度建模；这里的 TARDIS 主要用于在分类、相位和速度检查之后，辅助谱线识别和定性比较谱形。
+这个 notebook 不再依赖 `notebooks/legacy/` 或遗留 `.dat` 数据。它从本地 `data/SN*/` 一维 FITS 光谱读取观测谱，并优先使用 `02_spectral_analysis_pipeline.ipynb` 写出的目标化分析表来给 TARDIS 生成第一版参数。
 
-        只有当目标有可用观测光谱，并且 `output/<target>/tardis/` 下已经有 TARDIS 输出时，才需要在 `tardis` 环境中运行这个 notebook。
+TARDIS 在本项目里只用于辅助谱线识别和定性比较谱形，不作为抛射物质量、丰度或爆炸能量的强约束。默认 `RUN_TARDIS=False`，先检查配置；确认参数后再在 `tardis` 环境中运行模拟。
         """
     ),
     code(
         """
-        from pathlib import Path
-        import numpy as np
-        import matplotlib.pyplot as plt
-        from IPython.display import display
+%matplotlib inline
 
-        PROJECT_ROOT = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
-        TARGET = "SN2026jlm"
-        OUTPUT_DIR = PROJECT_ROOT / "output" / TARGET
-        SPECTRUM_DIR = OUTPUT_DIR / "spectrum"
-        TARDIS_DIR = OUTPUT_DIR / "tardis"
-        """
-    ),
-    md("## 读取观测光谱和模拟光谱"),
-    code(
-        """
-        observed_files = sorted(SPECTRUM_DIR.glob("*.dat"))
-        simulated_files = sorted(TARDIS_DIR.glob("tardis_spectrum_*.dat"))
+from pathlib import Path
+import shutil
+import sys
+from importlib import reload
 
-        if not observed_files:
-            raise FileNotFoundError(f"No observed *.dat spectra in {SPECTRUM_DIR}")
-        if not simulated_files:
-            raise FileNotFoundError(f"No TARDIS spectra in {TARDIS_DIR}")
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from IPython.display import display
 
-        observed_path = observed_files[0]
-        simulated_path = simulated_files[0]
-        obs = np.loadtxt(observed_path)
-        sim = np.loadtxt(simulated_path)
+PROJECT_ROOT = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
+sys.path.insert(0, str(PROJECT_ROOT))
 
-        wave_obs, flux_obs = obs[:, 0], obs[:, 1]
-        wave_sim, flux_sim = sim[:, 0], sim[:, 1]
+from src import spectral_notebook_tools as snt
 
-        print(f"观测光谱: {observed_path}")
-        print(f"模拟光谱: {simulated_path}")
-        """
-    ),
-    md("## 归一化并比较谱形"),
-    code(
-        """
-        def normalize(flux):
-            finite = np.isfinite(flux)
-            scale = np.nanpercentile(np.abs(flux[finite]), 95) if finite.any() else 1.0
-            return flux / scale if scale else flux
-
-        plt.figure(figsize=(10, 5))
-        plt.plot(wave_obs, normalize(flux_obs), lw=0.9, label="Observed WISeREP/BFOSC spectrum")
-        plt.plot(wave_sim, normalize(flux_sim), lw=0.9, label="TARDIS synthetic spectrum")
-        plt.xlim(3500, 9000)
-        plt.xlabel("Rest wavelength (Angstrom)")
-        plt.ylabel("Normalized flux / luminosity density")
-        plt.title(f"{TARGET}: qualitative TARDIS comparison")
-        plt.grid(alpha=0.25)
-        plt.legend()
-        plt.show()
+ANALYSIS_DIR = PROJECT_ROOT / "output" / "analysis_pipeline"
         """
     ),
     md(
         """
-        ## 解释边界
+## 1. 目标和手动覆盖参数
 
-        这个比较只能用来讨论模型是否大体匹配谱线位置或连续谱形状。若没有进一步建模和不确定度分析，不应从一条稀疏光谱中给出强的抛射物质量、爆炸能量或丰度约束。
+先只改这个 cell。`ANALYSIS_TAG` 为空时会自动读取该目标最新的 `*_target_status.csv`、`*_line_diagnostics_qc.csv` 等分析产物；如果你想强制使用某次输出，可以填 `SN2026KID` 或你在 02 里设置的 `OUTPUT_TAG`。
+
+手动覆盖项优先级最高。`MANUAL_APPARENT_MAG` 用于由红移和视星等粗估 luminosity；如果你已经知道更合适的 bolometric luminosity，直接填 `MANUAL_LOG_LSUN`。
+        """
+    ),
+    code(
+        """
+TARGET = "SN2026KID"
+ANALYSIS_TAG = ""  # 空字符串表示按目标读取最新产物；也可填 02 的 OUTPUT_TAG/RUN_TAG
+SPECTRUM_INDEX = 0
+
+RUN_TARDIS = False  # 确认配置和原子数据后再改 True
+
+MANUAL_Z = np.nan
+MANUAL_TYPE = ""
+MANUAL_VELOCITY_KMS = np.nan
+MANUAL_EPOCH_DAYS = np.nan
+MANUAL_APPARENT_MAG = np.nan
+MANUAL_LOG_LSUN = np.nan
+
+BASE_CONFIG_PATH = PROJECT_ROOT / "configs" / "tardis" / "base_Ia.yml"
+        """
+    ),
+    md(
+        """
+## 2. 从 02 的科学产物估计 TARDIS 起点
+
+本步读取的是当前项目产物，不读取 `legacy/`。优先使用手动红移表，其次目标状态表和光谱摘要表；类型来自目标状态/光谱摘要；速度来自 `line_diagnostics_qc.csv` 中 `adopt/check` 的关键谱线；epoch 和 luminosity 是粗略起点，通常需要人工调整。
+        """
+    ),
+    code(
+        """
+reload(snt)
+
+context = snt.estimate_tardis_context(
+    PROJECT_ROOT,
+    TARGET,
+    analysis_tag=ANALYSIS_TAG or None,
+    spectrum_index=SPECTRUM_INDEX,
+    manual_z=MANUAL_Z,
+    manual_type=MANUAL_TYPE,
+    manual_velocity_kms=MANUAL_VELOCITY_KMS,
+    manual_epoch_days=MANUAL_EPOCH_DAYS,
+    manual_apparent_mag=MANUAL_APPARENT_MAG,
+    manual_log_lsun=MANUAL_LOG_LSUN,
+)
+
+display(snt.spectrum_choice_table(context["spectra"], TARGET))
+display(snt.tardis_context_table(context))
+
+for name, table in context["analysis_tables"].items():
+    if not table.empty:
+        print(f"{name}: rows={len(table)}, product_file={table.get('product_file', pd.Series([''])).iloc[0]}")
+        """
+    ),
+    md(
+        """
+## 3. 检查选中的观测光谱
+
+下轴是观测波长，上轴是按当前采用红移换算后的静止系波长。这个图只用于检查 TARDIS 要比较哪一条真实观测光谱。
+        """
+    ),
+    code(
+        """
+spec = context["spectrum"]
+z = context["z"]
+
+fig, ax = plt.subplots(figsize=(10.5, 4.6))
+ax.plot(spec["wave"], snt.normalize_for_comparison(spec["flux"]), color="black", lw=0.8)
+ax.set_xlabel("Observed wavelength (Angstrom)")
+ax.set_ylabel("Normalized flux")
+ax.set_title(f"{context['target']} observed spectrum for TARDIS setup")
+ax.grid(alpha=0.25)
+snt.add_rest_top_axis(ax, z)
+snt.show_figure(fig)
+
+print(f"selected file = {spec['file']}")
+print(f"z = {z:.6f} ({context['z_source']})")
+        """
+    ),
+    md(
+        """
+## 4. 生成 TARDIS YAML 配置
+
+配置从 `configs/tardis/base_Ia.yml` 复制并覆盖：`luminosity_requested`、`time_explosion`、速度范围和 `atom_data` 绝对路径。非 Ia 目标会使用一个非常粗略的 II/Ibc 均匀丰度 preset；这只是定性起点，不代表自动物理拟合。
+        """
+    ),
+    code(
+        """
+CONFIG_PATH = PROJECT_ROOT / "configs" / "tardis" / f"{context['target']}.yml"
+config, config_path = snt.build_tardis_config_from_context(
+    context,
+    project_root=PROJECT_ROOT,
+    base_config_path=BASE_CONFIG_PATH,
+    output_config_path=CONFIG_PATH,
+)
+
+print(f"wrote config: {config_path}")
+display(pd.DataFrame([
+    {"section": "supernova", **config["supernova"]},
+    {"section": "velocity", **config["model"]["structure"]["velocity"]},
+    {"section": "abundances", **config["model"]["abundances"]},
+]))
+        """
+    ),
+    md(
+        """
+## 5. 检查 TARDIS 原子数据
+
+TARDIS 需要 `data/kurucz_cd23_chianti_H_He_latest.h5`。如果缺失，在终端运行：
+
+```bash
+conda activate tardis
+python scripts/download_tardis_atom_data.py
+```
+        """
+    ),
+    code(
+        """
+ATOM_DATA_FILE = Path(config["atom_data"])
+print(f"atom_data = {ATOM_DATA_FILE}")
+
+if ATOM_DATA_FILE.exists():
+    print(f"found atomic data: {ATOM_DATA_FILE.stat().st_size / 1e6:.0f} MB")
+else:
+    print("atomic data missing; run scripts/download_tardis_atom_data.py in the tardis environment")
+        """
+    ),
+    md(
+        """
+## 6. 可选：运行 TARDIS
+
+只有 `RUN_TARDIS=True` 时才会导入并运行 TARDIS。运行时间取决于 packet 数和迭代数；如果只是检查 notebook 流程，保持 False。
+        """
+    ),
+    code(
+        """
+tardis_wave = None
+tardis_flux = None
+sim = None
+
+if RUN_TARDIS:
+    if not ATOM_DATA_FILE.exists():
+        raise RuntimeError(f"Atomic data file not found: {ATOM_DATA_FILE}")
+    from tardis import run_tardis
+
+    print(f"running TARDIS with {config_path}")
+    try:
+        sim = run_tardis(str(config_path), show_convergence_plots=False, log_level="WARNING", show_progress_bars=False)
+    except TypeError:
+        sim = run_tardis(str(config_path), show_convergence_plots=False, log_level="WARNING")
+    tardis_wave, tardis_flux = snt.extract_tardis_spectrum_arrays(sim)
+    print("simulation complete")
+    print(f"iterations_executed = {getattr(sim, 'iterations_executed', 'unknown')}")
+    print(f"spectrum points = {len(tardis_wave)}")
+else:
+    print("RUN_TARDIS=False：已跳过模拟，只生成/检查配置。")
+        """
+    ),
+    md(
+        """
+## 7. 保存模拟结果并比较谱形
+
+如果刚刚运行了 TARDIS，本步会保存当前模拟光谱和配置副本到 `output/<target>/tardis/`。如果没有运行，但该目录已经有当前目标的 TARDIS 输出，本步可以读取并显示已有结果；这只是当前项目输出，不依赖 `legacy/`。
+        """
+    ),
+    code(
+        """
+TARDIS_DIR = PROJECT_ROOT / "output" / context["target"] / "tardis"
+TARDIS_DIR.mkdir(parents=True, exist_ok=True)
+SPECTRUM_OUT = TARDIS_DIR / f"tardis_spectrum_{context['target']}.dat"
+CONFIG_COPY = TARDIS_DIR / f"tardis_config_{context['target']}.yml"
+COMPARISON_OUT = TARDIS_DIR / f"tardis_comparison_{context['target']}.png"
+
+if tardis_wave is not None and tardis_flux is not None:
+    np.savetxt(SPECTRUM_OUT, np.column_stack([tardis_wave, tardis_flux]), header="wavelength_A luminosity_density_lambda_erg_s_A")
+    shutil.copyfile(config_path, CONFIG_COPY)
+    print(f"saved {SPECTRUM_OUT}")
+    print(f"saved {CONFIG_COPY}")
+elif SPECTRUM_OUT.exists():
+    existing = np.loadtxt(SPECTRUM_OUT)
+    tardis_wave, tardis_flux = existing[:, 0], existing[:, 1]
+    print(f"loaded existing current-project output: {SPECTRUM_OUT}")
+else:
+    print("还没有 TARDIS 光谱。把 RUN_TARDIS 改成 True 后重新运行第 6-7 节。")
+
+if tardis_wave is not None and tardis_flux is not None:
+    comparison_fig = snt.plot_tardis_comparison(
+        context["spectrum"],
+        tardis_wave,
+        tardis_flux,
+        z=context["z"],
+        target=context["target"],
+        output_path=COMPARISON_OUT,
+    )
+    snt.show_figure(comparison_fig)
+        """
+    ),
+    md(
+        """
+## 8. 调参边界
+
+优先调 `MANUAL_Z`、`MANUAL_TYPE`、`MANUAL_VELOCITY_KMS`、`MANUAL_EPOCH_DAYS` 和 luminosity。若只是几条谱线对不上，不要直接把 TARDIS 结果解释成物理参数；本项目的稀疏光谱更适合把 TARDIS 当作谱线识别和连续谱形状的 sanity check。
         """
     ),
 ]
-
 
 REPORT_NOTEBOOK = [
     md(
@@ -933,17 +1111,36 @@ REPORT_NOTEBOOK = [
     code(
         """
         from pathlib import Path
+        import sys
+
         import pandas as pd
         from IPython.display import display, Image, Markdown
 
         PROJECT_ROOT = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
+        sys.path.insert(0, str(PROJECT_ROOT))
+
+        from src import spectral_notebook_tools as snt
+
         ANALYSIS_DIR = PROJECT_ROOT / "output" / "analysis_pipeline"
         FIG_DIR = ANALYSIS_DIR / "figures"
 
-        target_status = pd.read_csv(ANALYSIS_DIR / "target_status.csv")
-        line_qc = pd.read_csv(ANALYSIS_DIR / "line_diagnostics_qc.csv")
-        host_summary = pd.read_csv(ANALYSIS_DIR / "host_environment_summary.csv")
-        bb = pd.read_csv(ANALYSIS_DIR / "blackbody_temperature.csv")
+        def read_product(filename):
+            table = snt.read_combined_analysis_products(ANALYSIS_DIR, filename)
+            if table.empty:
+                raise FileNotFoundError(f"缺少 {filename} 或目标化 *_{filename}")
+            return table
+
+        def latest_figure(filename):
+            candidates = sorted(FIG_DIR.glob(f"*_{filename}"), key=lambda p: p.stat().st_mtime, reverse=True)
+            legacy = FIG_DIR / filename
+            if legacy.exists():
+                candidates.append(legacy)
+            return candidates[0] if candidates else None
+
+        target_status = read_product("target_status.csv")
+        line_qc = read_product("line_diagnostics_qc.csv")
+        host_summary = read_product("host_environment_summary.csv")
+        bb = read_product("blackbody_temperature.csv")
         """
     ),
     md(
@@ -957,7 +1154,7 @@ REPORT_NOTEBOOK = [
         """
         ## 数据
 
-        本项目整合 TNS 元数据和找星图、可用时的 Lasair/ZTF 光变曲线、WISeREP 公开光谱，以及 `data/SN*/` 下的本地 BFOSC 一维光谱。下面的分析产物由 `scripts/build_analysis_products.py` 生成。
+        本项目整合 TNS 元数据和找星图、可用时的 Lasair/ZTF 光变曲线、WISeREP 公开光谱，以及 `data/SN*/` 下的本地 BFOSC 一维光谱。下面的分析产物可以由 `02_spectral_analysis_pipeline.ipynb` 逐目标调参生成，也可以由 `scripts/build_analysis_products.py` 批量生成。
         """
     ),
     code("display(target_status)"),
@@ -977,41 +1174,25 @@ REPORT_NOTEBOOK = [
     md("## 关键图表"),
     md(
         """
-        这些图也直接以 Markdown 链接嵌入，因此即使不执行代码单元，报告仍然可读。
-
-        ### 目标状态
-
-        ![目标状态](../output/analysis_pipeline/figures/target_status_table.png)
-
-        ### 谱线速度演化
-
-        ![谱线速度演化](../output/analysis_pipeline/figures/line_velocity_evolution.png)
-
-        ### pEW 演化
-
-        ![pEW 演化](../output/analysis_pipeline/figures/pew_evolution.png)
-
-        ### 连续谱颜色温度估计
-
-        ![黑体温度](../output/analysis_pipeline/figures/blackbody_temperature.png)
-
-        ### 宿主/环境谱线探测
-
-        ![宿主线探测](../output/analysis_pipeline/figures/host_line_detections.png)
+        下面的 code cell 会优先显示带目标名前缀的最新图；如果没有目标化图，再回退到旧的无前缀批量图。
         """
     ),
     code(
         """
-        for fig in [
-            "target_status_table.png",
-            "line_velocity_evolution.png",
-            "pew_evolution.png",
-            "blackbody_temperature.png",
-            "host_line_detections.png",
+        for title, fig in [
+            ("目标状态", "target_status_table.png"),
+            ("谱线速度演化", "line_velocity_evolution.png"),
+            ("pEW 演化", "pew_evolution.png"),
+            ("连续谱颜色温度估计", "blackbody_temperature.png"),
+            ("宿主/环境谱线探测", "host_line_detections.png"),
         ]:
-            path = FIG_DIR / fig
-            display(Markdown(f"### {fig}"))
-            display(Image(filename=str(path)))
+            path = latest_figure(fig)
+            display(Markdown(f"### {title}"))
+            if path is None:
+                print(f"缺少图：{fig}")
+            else:
+                print(path.name)
+                display(Image(filename=str(path)))
         """
     ),
     md(

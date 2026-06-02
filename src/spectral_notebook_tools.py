@@ -138,6 +138,99 @@ def target_redshift(spectra: Iterable[dict], target: str) -> float:
     return float(np.nanmedian(z_values)) if z_values else np.nan
 
 
+def _slug_part(value: object) -> str:
+    text = str(value or "").strip().replace(" ", "")
+    text = re.sub(r"[^A-Za-z0-9_.-]+", "_", text)
+    return text.strip("_")
+
+
+def analysis_output_tag(targets: Iterable[object] | pd.Series | pd.DataFrame, output_tag: str | None = None) -> str:
+    """Build a stable filename tag for a notebook analysis run."""
+    explicit = _slug_part(output_tag)
+    if explicit:
+        return explicit
+    if isinstance(targets, pd.DataFrame):
+        values = targets["target"].tolist() if "target" in targets.columns else []
+    else:
+        values = list(targets)
+    keys = sorted({target_key(value) for value in values if str(value or "").strip()})
+    if len(keys) == 1:
+        return keys[0]
+    if len(keys) == 0:
+        return "no_target"
+    if len(keys) <= 3:
+        return "_".join(keys)
+    return f"{len(keys)}targets"
+
+
+def tagged_filename(filename: str, tag: str | None = None) -> str:
+    """Prefix a file with the analysis tag unless it is already tagged."""
+    clean_tag = _slug_part(tag)
+    if not clean_tag:
+        return filename
+    path = Path(filename)
+    if path.name.startswith(f"{clean_tag}_"):
+        return path.name
+    return f"{clean_tag}_{path.name}"
+
+
+def analysis_output_path(analysis_dir: Path, filename: str, *, tag: str | None = None, product_prefix: str = "") -> Path:
+    prefix = _slug_part(product_prefix)
+    full_tag = "_".join(part for part in [prefix, _slug_part(tag)] if part)
+    return Path(analysis_dir) / tagged_filename(filename, full_tag)
+
+
+def find_analysis_products(analysis_dir: Path, filename: str, *, tag: str | None = None) -> list[Path]:
+    """Find tagged analysis products, newest first, with legacy untagged fallback."""
+    analysis_dir = Path(analysis_dir)
+    clean_tag = _slug_part(tag)
+    candidates: list[Path] = []
+    if clean_tag:
+        tagged = analysis_dir / tagged_filename(filename, clean_tag)
+        if tagged.exists():
+            candidates.append(tagged)
+    candidates.extend(sorted(analysis_dir.glob(f"*_{filename}"), key=lambda p: p.stat().st_mtime, reverse=True))
+    legacy = analysis_dir / filename
+    if legacy.exists():
+        candidates.append(legacy)
+    seen = set()
+    unique = []
+    for path in candidates:
+        if path not in seen:
+            unique.append(path)
+            seen.add(path)
+    return unique
+
+
+def read_analysis_product(analysis_dir: Path, filename: str, *, tag: str | None = None, target: str | None = None) -> pd.DataFrame:
+    for path in find_analysis_products(analysis_dir, filename, tag=tag):
+        table = pd.read_csv(path)
+        if target and "target" in table.columns:
+            table = table[table["target"].eq(target_key(target))].reset_index(drop=True)
+        if not table.empty:
+            table["product_file"] = str(path)
+            return table
+    return pd.DataFrame()
+
+
+def read_combined_analysis_products(analysis_dir: Path, filename: str, *, tag: str | None = None) -> pd.DataFrame:
+    """Read tagged/legacy products, keeping the newest available rows per target."""
+    frames = []
+    seen_targets: set[str] = set()
+    for path in find_analysis_products(analysis_dir, filename, tag=tag):
+        table = pd.read_csv(path)
+        table["product_file"] = path.name
+        if "target" not in table.columns:
+            return table
+        table["target"] = table["target"].map(target_key)
+        new = table[~table["target"].isin(seen_targets)].copy()
+        if new.empty:
+            continue
+        frames.append(new)
+        seen_targets.update(str(value) for value in new["target"].dropna().unique())
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
 def tns_redshift_reference(project_root: Path, target: str) -> dict[str, object]:
     """Return a TNS public-catalog redshift reference without using it in local measurements."""
     catalog_path = project_root / "data" / "tns_public_objects.csv"
@@ -155,6 +248,334 @@ def tns_redshift_reference(project_root: Path, target: str) -> dict[str, object]
         "source": str(catalog_path),
         "status": status,
     }
+
+
+def _first_finite(table: pd.DataFrame, columns: Iterable[str]) -> tuple[float, str]:
+    for column in columns:
+        if column not in table.columns:
+            continue
+        values = pd.to_numeric(table[column], errors="coerce").dropna()
+        if not values.empty:
+            return float(values.iloc[0]), column
+    return np.nan, ""
+
+
+def _first_text(table: pd.DataFrame, columns: Iterable[str]) -> tuple[str, str]:
+    for column in columns:
+        if column not in table.columns:
+            continue
+        values = [str(value).strip() for value in table[column].dropna() if str(value).strip()]
+        if values:
+            return values[0], column
+    return "", ""
+
+
+def _estimate_log_lsun(z: float, apparent_mag: float, sn_family: str) -> tuple[float, str]:
+    if np.isfinite(apparent_mag) and np.isfinite(z) and z > 0:
+        try:
+            from astropy import units as u
+            from astropy.cosmology import Planck18 as cosmo
+
+            d_l_pc = cosmo.luminosity_distance(z).to(u.pc).value
+            dist_modulus = 5.0 * np.log10(d_l_pc / 10.0)
+            abs_mag = apparent_mag - dist_modulus
+            return float(0.4 * (4.74 - abs_mag)), "manual apparent_mag + Planck18 luminosity distance"
+        except Exception as exc:
+            return np.nan, f"luminosity estimate failed: {exc}"
+    defaults = {"Ia": 9.4, "II": 8.8, "Ibc": 9.0}
+    return defaults.get(sn_family, 9.0), "type default; set MANUAL_LOG_LSUN or MANUAL_APPARENT_MAG"
+
+
+def tardis_type_family(sn_type: object) -> str:
+    canonical = sp.canonical_sn_type(sn_type)
+    if canonical in {"ii", "iin"}:
+        return "II"
+    if canonical in {"iib", "ib", "ic", "icbl"}:
+        return "Ibc"
+    return "Ia"
+
+
+def _choose_velocity(line_qc: pd.DataFrame, sn_type: object) -> tuple[float, str]:
+    if line_qc.empty:
+        return np.nan, ""
+    rows = line_qc.copy()
+    if "velocity_kms" not in rows.columns or "qc_flag" not in rows.columns:
+        return np.nan, ""
+    rows["velocity_kms"] = pd.to_numeric(rows.get("velocity_kms"), errors="coerce").abs()
+    rows = rows[rows["velocity_kms"].notna() & rows["qc_flag"].isin(["adopt", "check"])]
+    if rows.empty:
+        return np.nan, ""
+    primary = sp.primary_lines_for_type(sn_type)
+    for flag in ["adopt", "check"]:
+        subset = rows[rows["qc_flag"].eq(flag)]
+        if subset.empty:
+            continue
+        if primary:
+            primary_subset = subset[subset["line"].isin(primary)]
+            if not primary_subset.empty:
+                value = float(np.nanmedian(primary_subset["velocity_kms"]))
+                lines = ", ".join(sorted(primary_subset["line"].unique()))
+                return value, f"{flag} primary lines: {lines}"
+        value = float(np.nanmedian(subset["velocity_kms"]))
+        lines = ", ".join(sorted(subset["line"].unique()))
+        return value, f"{flag} lines: {lines}"
+    return np.nan, ""
+
+
+def estimate_tardis_context(
+    project_root: Path,
+    target: str,
+    *,
+    analysis_tag: str | None = None,
+    spectrum_index: int = 0,
+    manual_z: float | None = None,
+    manual_type: str = "",
+    manual_velocity_kms: float | None = None,
+    manual_epoch_days: float | None = None,
+    manual_apparent_mag: float | None = None,
+    manual_log_lsun: float | None = None,
+) -> dict[str, object]:
+    """Collect a first-pass TARDIS starting point from local spectra and 02 products."""
+    project_root = Path(project_root)
+    key = target_key(target)
+    analysis_dir = project_root / "output" / "analysis_pipeline"
+    spectra_all, skipped = load_observed_spectra(project_root, target_metadata={})
+    spectra = sorted(
+        [spec for spec in spectra_all if spec["target"] == key],
+        key=lambda spec: pd.Timestamp.max if pd.isna(spec["date_obs"]) else spec["date_obs"],
+    )
+    if not spectra:
+        raise FileNotFoundError(f"No local 1-D FITS spectra found for {key} under {project_root / 'data'}")
+
+    target_status = read_combined_analysis_products(analysis_dir, "target_status.csv", tag=analysis_tag)
+    spectra_summary = read_combined_analysis_products(analysis_dir, "spectra_summary.csv", tag=analysis_tag)
+    redshift_summary = read_combined_analysis_products(analysis_dir, "manual_redshift_summary.csv", tag=analysis_tag)
+    line_qc = read_combined_analysis_products(analysis_dir, "line_diagnostics_qc.csv", tag=analysis_tag)
+    bb_table = read_combined_analysis_products(analysis_dir, "blackbody_temperature.csv", tag=analysis_tag)
+
+    target_status = target_status[target_status["target"].eq(key)] if "target" in target_status.columns else pd.DataFrame()
+    spectra_summary = spectra_summary[spectra_summary["target"].eq(key)] if "target" in spectra_summary.columns else pd.DataFrame()
+    redshift_summary = redshift_summary[redshift_summary["target"].eq(key)] if "target" in redshift_summary.columns else pd.DataFrame()
+    line_qc = line_qc[line_qc["target"].eq(key)] if "target" in line_qc.columns else pd.DataFrame()
+    bb_table = bb_table[bb_table["target"].eq(key)] if "target" in bb_table.columns else pd.DataFrame()
+
+    z_manual = sp.parse_float(manual_z)
+    if np.isfinite(z_manual):
+        z, z_source = z_manual, "manual override"
+    else:
+        z, z_col = _first_finite(redshift_summary, ["z_manual", "z"])
+        z_source = f"manual_redshift_summary.{z_col}" if z_col else ""
+        if not np.isfinite(z):
+            z, z_col = _first_finite(target_status, ["z"])
+            z_source = f"target_status.{z_col}" if z_col else ""
+        if not np.isfinite(z):
+            z, z_col = _first_finite(spectra_summary, ["z"])
+            z_source = f"spectra_summary.{z_col}" if z_col else "unset"
+
+    sn_type = str(manual_type).strip()
+    type_source = "manual override" if sn_type else ""
+    if not sn_type:
+        sn_type, type_col = _first_text(target_status, ["type", "rough_type", "template_type"])
+        type_source = f"target_status.{type_col}" if type_col else ""
+    if not sn_type:
+        sn_type, type_col = _first_text(spectra_summary, ["type", "rough_type"])
+        type_source = f"spectra_summary.{type_col}" if type_col else "unset"
+    if not sn_type:
+        sn_type = "Unclassified"
+
+    sn_family = tardis_type_family(sn_type)
+    velocity_manual = sp.parse_float(manual_velocity_kms)
+    if np.isfinite(velocity_manual):
+        velocity_kms, velocity_source = velocity_manual, "manual override"
+    else:
+        velocity_kms, velocity_source = _choose_velocity(line_qc, sn_type)
+        if not np.isfinite(velocity_kms):
+            velocity_defaults = {"Ia": 11000.0, "II": 8000.0, "Ibc": 10000.0}
+            velocity_kms = velocity_defaults.get(sn_family, 10000.0)
+            velocity_source = "type default; set MANUAL_VELOCITY_KMS"
+
+    epoch_manual = sp.parse_float(manual_epoch_days)
+    if np.isfinite(epoch_manual):
+        epoch_days, epoch_source = epoch_manual, "manual override"
+    else:
+        phases = pd.to_numeric(spectra_summary.get("phase_days", pd.Series(dtype=float)), errors="coerce").dropna()
+        if phases.empty:
+            phases = pd.Series([spec["phase_days"] for spec in spectra], dtype=float).dropna()
+        rise_default = {"Ia": 18.0, "II": 15.0, "Ibc": 15.0}.get(sn_family, 15.0)
+        if not phases.empty:
+            epoch_days = max(5.0, float(np.nanmedian(phases)) + rise_default)
+            epoch_source = f"median phase_days + {rise_default:g} d type default rise"
+        else:
+            epoch_days = rise_default
+            epoch_source = "type default; set MANUAL_EPOCH_DAYS"
+
+    log_manual = sp.parse_float(manual_log_lsun)
+    if np.isfinite(log_manual):
+        log_lsun, luminosity_source = log_manual, "manual override"
+    else:
+        apparent = sp.parse_float(manual_apparent_mag)
+        log_lsun, luminosity_source = _estimate_log_lsun(z, apparent, sn_family)
+
+    if sn_family == "Ia":
+        v_phot = 0.7 * velocity_kms
+    else:
+        v_phot = velocity_kms
+    v_start = max(2500.0, 0.6 * v_phot)
+    v_stop = min(35000.0, max(v_start + 3000.0, 1.3 * velocity_kms))
+
+    for spec in spectra:
+        if np.isfinite(z):
+            spec["z"] = z
+            spec["z_source"] = z_source
+        spec["type"] = sn_type
+    spectrum_index = int(np.clip(spectrum_index, 0, len(spectra) - 1))
+    spectrum = spectra[spectrum_index]
+    return {
+        "target": key,
+        "spectra": spectra,
+        "spectrum": spectrum,
+        "spectrum_index": spectrum_index,
+        "skipped_fits": skipped,
+        "z": float(z) if np.isfinite(z) else np.nan,
+        "z_source": z_source,
+        "sn_type": sn_type,
+        "type_source": type_source,
+        "sn_family": sn_family,
+        "velocity_kms": float(velocity_kms),
+        "velocity_source": velocity_source,
+        "epoch_days": float(epoch_days),
+        "epoch_source": epoch_source,
+        "log_lsun": float(log_lsun) if np.isfinite(log_lsun) else np.nan,
+        "luminosity_source": luminosity_source,
+        "v_start_kms": float(v_start),
+        "v_stop_kms": float(v_stop),
+        "analysis_tables": {
+            "target_status": target_status,
+            "spectra_summary": spectra_summary,
+            "manual_redshift_summary": redshift_summary,
+            "line_diagnostics_qc": line_qc,
+            "blackbody_temperature": bb_table,
+        },
+    }
+
+
+def tardis_context_table(context: dict[str, object]) -> pd.DataFrame:
+    fields = [
+        ("target", context.get("target"), ""),
+        ("selected spectrum", context.get("spectrum", {}).get("file", ""), f"index={context.get('spectrum_index')}"),
+        ("redshift z", context.get("z"), context.get("z_source")),
+        ("SN type", context.get("sn_type"), context.get("type_source")),
+        ("TARDIS family", context.get("sn_family"), "Ia / II / Ibc abundance preset"),
+        ("line velocity", context.get("velocity_kms"), context.get("velocity_source")),
+        ("time_explosion", context.get("epoch_days"), context.get("epoch_source")),
+        ("luminosity", context.get("log_lsun"), context.get("luminosity_source")),
+        ("velocity start", context.get("v_start_kms"), "0.6 x photospheric proxy"),
+        ("velocity stop", context.get("v_stop_kms"), "1.3 x line velocity proxy"),
+    ]
+    return pd.DataFrame(fields, columns=["parameter", "value", "source_or_note"])
+
+
+def build_tardis_config_from_context(
+    context: dict[str, object],
+    *,
+    project_root: Path,
+    base_config_path: Path | None = None,
+    output_config_path: Path | None = None,
+) -> tuple[dict, Path]:
+    import yaml
+
+    project_root = Path(project_root)
+    base_config_path = base_config_path or project_root / "configs" / "tardis" / "base_Ia.yml"
+    output_config_path = output_config_path or project_root / "configs" / "tardis" / f"{context['target']}.yml"
+    config = yaml.safe_load(base_config_path.read_text())
+    config.setdefault("supernova", {})
+    config["supernova"]["luminosity_requested"] = f"{context['log_lsun']:.2f} log_lsun"
+    config["supernova"]["time_explosion"] = f"{context['epoch_days']:.1f} day"
+    config.setdefault("model", {}).setdefault("structure", {}).setdefault("velocity", {})
+    config["model"]["structure"]["velocity"]["start"] = f"{context['v_start_kms']:.1f} km/s"
+    config["model"]["structure"]["velocity"]["stop"] = f"{context['v_stop_kms']:.1f} km/s"
+    config["atom_data"] = str((project_root / "data" / "kurucz_cd23_chianti_H_He_latest.h5").resolve())
+
+    family = str(context.get("sn_family", "Ia"))
+    if family == "II":
+        config["model"]["abundances"] = {
+            "type": "uniform",
+            "H": 0.70,
+            "He": 0.28,
+            "O": 0.01,
+            "Si": 0.005,
+            "S": 0.005,
+        }
+    elif family == "Ibc":
+        config["model"]["abundances"] = {
+            "type": "uniform",
+            "He": 0.50,
+            "O": 0.30,
+            "C": 0.15,
+            "Si": 0.03,
+            "S": 0.02,
+        }
+
+    output_config_path.parent.mkdir(parents=True, exist_ok=True)
+    output_config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    return config, output_config_path
+
+
+def extract_tardis_spectrum_arrays(sim) -> tuple[np.ndarray, np.ndarray]:
+    spectrum = sim.spectrum_solver.spectrum_real_packets
+    wave = np.asarray(spectrum.wavelength.value, dtype=float)
+    flux = np.asarray(spectrum.luminosity_density_lambda.value, dtype=float)
+    order = np.argsort(wave)
+    return wave[order], flux[order]
+
+
+def normalize_for_comparison(flux: np.ndarray) -> np.ndarray:
+    finite = np.isfinite(flux)
+    if not finite.any():
+        return flux
+    scale = np.nanpercentile(np.abs(flux[finite]), 95)
+    return flux / scale if np.isfinite(scale) and scale else flux
+
+
+def plot_tardis_comparison(
+    observed_spec: dict,
+    tardis_wave: np.ndarray,
+    tardis_flux: np.ndarray,
+    *,
+    z: float,
+    target: str,
+    output_path: Path | None = None,
+):
+    obs_wave = observed_to_rest(observed_spec["wave"], z)
+    obs_flux = normalize_for_comparison(observed_spec["flux"])
+    sim_wave = np.asarray(tardis_wave, dtype=float)
+    sim_flux = normalize_for_comparison(np.asarray(tardis_flux, dtype=float))
+    order = np.argsort(sim_wave)
+    sim_wave = sim_wave[order]
+    sim_flux = sim_flux[order]
+
+    fig, axes = plt.subplots(2, 1, figsize=(10.5, 6.2), sharex=True, gridspec_kw={"height_ratios": [3, 1]})
+    axes[0].plot(obs_wave, obs_flux, color="black", lw=0.8, label="Observed rest-frame spectrum")
+    axes[0].plot(sim_wave, sim_flux, color="#d95f02", lw=1.0, alpha=0.85, label="TARDIS synthetic spectrum")
+    axes[0].set_ylabel("Normalized flux / luminosity density")
+    axes[0].set_title(f"{target}: qualitative TARDIS comparison")
+    axes[0].grid(alpha=0.25)
+    axes[0].legend(fontsize=8)
+
+    mask = np.isfinite(obs_wave) & np.isfinite(obs_flux)
+    common = mask & (obs_wave >= np.nanmin(sim_wave)) & (obs_wave <= np.nanmax(sim_wave))
+    if common.sum() > 10:
+        interp = np.interp(obs_wave[common], sim_wave, sim_flux)
+        axes[1].plot(obs_wave[common], obs_flux[common] - interp, color="0.25", lw=0.7)
+    axes[1].axhline(0, color="0.55", ls="--", lw=0.8)
+    axes[1].set_xlabel("Rest wavelength (Angstrom)")
+    axes[1].set_ylabel("Residual")
+    axes[1].grid(alpha=0.25)
+    axes[1].set_xlim(3000, 10000)
+    if output_path is not None:
+        output_path = Path(output_path)
+        save_figure(fig, output_path.parent, output_path.name, enabled=True)
+    return fig
 
 
 def apply_redshift_overrides(spectra: list[dict], redshift_by_target: dict[str, float]) -> list[dict]:
@@ -1410,6 +1831,7 @@ def plot_line_diagnostics_grid(
     max_panels: int,
     fig_dir: Path,
     save_figures: bool,
+    filename_tag: str | None = None,
     **measure_kwargs,
 ):
     rows = line_qc[line_qc["status"].eq("ok")].copy()
@@ -1506,7 +1928,7 @@ def plot_line_diagnostics_grid(
         used_axes[0].legend(fontsize=7, loc="best")
     if len(used_axes) > 1:
         used_axes[1].legend(fontsize=7, loc="best")
-    save_figure(fig, fig_dir, "line_diagnostics_grid.png", enabled=save_figures)
+    save_figure(fig, fig_dir, tagged_filename("line_diagnostics_grid.png", filename_tag), enabled=save_figures)
     return fig
 
 
@@ -1639,7 +2061,15 @@ def blackbody_profile(wave_rest: np.ndarray, flux: np.ndarray, wave_range: tuple
         return {"status": f"fit failed: {exc}"}
 
 
-def plot_blackbody_fit_grid(spectra: list[dict], *, target: str | None, wave_range: tuple[float, float], fig_dir: Path, save_figures: bool):
+def plot_blackbody_fit_grid(
+    spectra: list[dict],
+    *,
+    target: str | None,
+    wave_range: tuple[float, float],
+    fig_dir: Path,
+    save_figures: bool,
+    filename_tag: str | None = None,
+):
     items = [spec for spec in spectra if target is None or spec["target"] == target_key(target)]
     if not items:
         print("No spectra to plot.")
@@ -1666,11 +2096,11 @@ def plot_blackbody_fit_grid(spectra: list[dict], *, target: str | None, wave_ran
     for ax in axes.ravel()[len(items):]:
         ax.axis("off")
     axes.ravel()[0].legend(fontsize=8)
-    save_figure(fig, fig_dir, "blackbody_fit_grid.png", enabled=save_figures)
+    save_figure(fig, fig_dir, tagged_filename("blackbody_fit_grid.png", filename_tag), enabled=save_figures)
     return fig
 
 
-def plot_host_line_grid(host_lines: pd.DataFrame, *, target: str | None, fig_dir: Path, save_figures: bool):
+def plot_host_line_grid(host_lines: pd.DataFrame, *, target: str | None, fig_dir: Path, save_figures: bool, filename_tag: str | None = None):
     rows = host_lines[host_lines["status"].eq("detected")].copy()
     if target:
         rows = rows[rows["target"].eq(target_key(target))]
@@ -1683,5 +2113,5 @@ def plot_host_line_grid(host_lines: pd.DataFrame, *, target: str | None, fig_dir
     ax.set_xlabel("Line-index S/N")
     ax.set_title("Host/environment narrow-line indices")
     ax.grid(axis="x", alpha=0.25)
-    save_figure(fig, fig_dir, "host_line_detections.png", enabled=save_figures)
+    save_figure(fig, fig_dir, tagged_filename("host_line_detections.png", filename_tag), enabled=save_figures)
     return fig
