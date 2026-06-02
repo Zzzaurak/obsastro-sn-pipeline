@@ -4,6 +4,13 @@
 
 Supernova observing and sparse-spectrum analysis pipeline. The project queries TNS (Transient Name Server), computes nightly observability windows, downloads/organizes Lasair and WISeREP auxiliary data, runs a reproducible spectral-diagnostics pipeline, and generates Chinese report notebooks plus English final-presentation slides.
 
+## 语言约定
+
+- `ppt/` 下的最终展示材料按课程要求使用英文。
+- `README.md`、`notebooks/`、报告 notebook 的说明文字可以使用中文；这也是当前仓库采用的默认写法。
+- 代码变量、函数名、CSV 字段名和命令行参数保持英文，便于维护和复用。
+- 文献原文、图表坐标轴或外部软件输出可保留英文；正式口头展示时再翻译成英文 slides。
+
 ## Current Deliverable Workflow
 
 Use these as the current stable entry points:

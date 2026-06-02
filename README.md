@@ -1,17 +1,8 @@
----
-# 注意: 请 AI 编辑此文件时尽可能适合人看；给 AI 看的项目细节主要在 `AGENTS.md`
----
+请 AI 编辑此文件时尽可能适合人看；给 AI 看的项目细节主要在 `AGENTS.md`
 
 # SN 观测与光谱分析流水线
 
 本项目围绕一组新近超新星目标，完成从观测准备到稀疏光谱分析、报告 notebook 和英文汇报 slides 的可复现流程。当前版本的核心思路是：数据获取和观测准备自动化，光谱诊断集中到一个稳定 pipeline，TARDIS 只作为定性解释辅助。
-
-## 语言约定
-
-- `ppt/` 下的最终展示材料按课程要求使用英文。
-- `README.md`、`notebooks/`、报告 notebook 的说明文字可以使用中文；这也是当前仓库采用的默认写法。
-- 代码变量、函数名、CSV 字段名和命令行参数保持英文，便于维护和复用。
-- 文献原文、图表坐标轴或外部软件输出可保留英文；正式口头展示时再翻译成英文 slides。
 
 ## 当前主流程
 
@@ -34,7 +25,7 @@ python scripts/build_presentation_figures.py
 python scripts/create_deliverable_notebooks.py
 ```
 
-最终英文 slides 位于 `ppt/`：
+最终 slides 位于 `ppt/`：
 
 ```bash
 cd ppt
