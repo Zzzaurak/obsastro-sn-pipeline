@@ -1404,6 +1404,110 @@ def auto_pick_line_wavelength(window: dict, *, mode: str = "emission") -> float:
     return float(wave[np.nanargmax(norm)])
 
 
+def fit_redshift_line_gaussian(
+    window: dict,
+    *,
+    mode: str,
+    center_guess: float,
+    half_width: float,
+) -> dict:
+    if window.get("status") != "ok":
+        status = window.get("status", "window unavailable")
+        return {
+            "gaussian_status": status,
+            "gaussian_wave": np.nan,
+            "gaussian_z": np.nan,
+            "gaussian_params": {},
+            "gaussian_model_norm": None,
+            "gaussian_fit_wave": None,
+            "gaussian_fit_norm": None,
+        }
+
+    wave = np.asarray(window["wave_obs"], dtype=float)
+    norm = np.asarray(window["norm"], dtype=float)
+    center0 = sp.parse_float(center_guess)
+    if not np.isfinite(center0):
+        center0 = float(window.get("center_obs", np.nanmedian(wave)))
+    local_half = float(min(40.0, max(float(half_width) / 2.0, 1.0)))
+    fit_mask = np.isfinite(wave) & np.isfinite(norm) & (wave >= center0 - local_half) & (wave <= center0 + local_half)
+    if fit_mask.sum() < 8:
+        return {
+            "gaussian_status": "fit failed: insufficient local points",
+            "gaussian_wave": np.nan,
+            "gaussian_z": np.nan,
+            "gaussian_params": {},
+            "gaussian_model_norm": None,
+            "gaussian_fit_wave": None,
+            "gaussian_fit_norm": None,
+        }
+
+    wave_fit = wave[fit_mask]
+    norm_fit = norm[fit_mask]
+    x_scale = max(local_half, 1.0)
+
+    baseline0 = float(np.nanmedian(norm_fit))
+    if not np.isfinite(baseline0):
+        baseline0 = 1.0
+    if mode == "absorption":
+        amp0 = float(np.nanmin(norm_fit) - baseline0)
+        if not np.isfinite(amp0) or amp0 >= 0:
+            amp0 = -0.1
+        amp_bounds = (-1.5, 0.0)
+    else:
+        amp0 = float(np.nanmax(norm_fit) - baseline0)
+        if not np.isfinite(amp0) or amp0 <= 0:
+            amp0 = 0.1
+        amp_bounds = (0.0, 1.5)
+    sigma0 = float(np.clip(np.nanstd(wave_fit) / 2.0, 5.0, 10.0))
+    slope0 = 0.0
+    center_delta = min(25.0, local_half)
+
+    def model(wave_vals, center, sigma, amp, baseline, slope):
+        x_scaled = (wave_vals - center0) / x_scale
+        return baseline + slope * x_scaled + amp * np.exp(-0.5 * ((wave_vals - center) / sigma) ** 2)
+
+    try:
+        params, _cov = curve_fit(
+            model,
+            wave_fit,
+            norm_fit,
+            p0=(center0, sigma0, amp0, baseline0, slope0),
+            bounds=(
+                (center0 - center_delta, 0.8, amp_bounds[0], 0.5, -0.5),
+                (center0 + center_delta, 50.0, amp_bounds[1], 1.5, 0.5),
+            ),
+            maxfev=20000,
+        )
+        fit_norm = model(wave, *params)
+        center = float(params[0])
+        result = {
+            "gaussian_status": "ok",
+            "gaussian_wave": center,
+            "gaussian_z": np.nan,
+            "gaussian_params": {
+                "center": center,
+                "sigma": float(params[1]),
+                "amp": float(params[2]),
+                "baseline": float(params[3]),
+                "slope": float(params[4]),
+            },
+            "gaussian_model_norm": fit_norm,
+            "gaussian_fit_wave": wave_fit,
+            "gaussian_fit_norm": model(wave_fit, *params),
+        }
+        return result
+    except Exception as exc:
+        return {
+            "gaussian_status": f"fit failed: {exc}",
+            "gaussian_wave": np.nan,
+            "gaussian_z": np.nan,
+            "gaussian_params": {},
+            "gaussian_model_norm": None,
+            "gaussian_fit_wave": None,
+            "gaussian_fit_norm": None,
+        }
+
+
 def redshift_from_observed(rest_wave: float, observed_wave: float) -> float:
     return float(observed_wave) / float(rest_wave) - 1.0
 
@@ -1617,8 +1721,20 @@ def plot_redshift_zoom(
     window = normalize_window_observed(spec, rest_wave, z_guess=z_guess, half_width=half_width)
     if window.get("status") != "ok":
         print(window.get("status"))
-        return window, np.nan
+        return {
+            **window,
+            "gaussian_status": window.get("status", "window unavailable"),
+            "gaussian_wave": np.nan,
+            "gaussian_z": np.nan,
+            "gaussian_params": {},
+            "gaussian_model_norm": None,
+            "gaussian_fit_wave": None,
+            "gaussian_fit_norm": None,
+        }, np.nan
     auto_wave = auto_pick_line_wavelength(window, mode=mode)
+    gaussian_result = fit_redshift_line_gaussian(window, mode=mode, center_guess=auto_wave, half_width=half_width)
+    if gaussian_result.get("gaussian_status") == "ok" and np.isfinite(gaussian_result.get("gaussian_wave", np.nan)):
+        gaussian_result["gaussian_z"] = redshift_from_observed(rest_wave, gaussian_result["gaussian_wave"])
     z_auto = redshift_from_observed(rest_wave, auto_wave)
     adopted_wave = float(manual_observed_wave) if manual_observed_wave is not None and np.isfinite(manual_observed_wave) else auto_wave
     z_adopted = redshift_from_observed(rest_wave, adopted_wave)
@@ -1626,6 +1742,15 @@ def plot_redshift_zoom(
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.plot(window["wave_obs"], window["raw_flux"] / window["continuum"], color="0.7", lw=0.8, label="raw / local continuum")
     ax.plot(window["wave_obs"], window["norm"], color="black", lw=1.1, label="smoothed / local continuum")
+    if gaussian_result.get("gaussian_status") == "ok" and gaussian_result.get("gaussian_model_norm") is not None:
+        gaussian_label = f"Gaussian fit center={gaussian_result['gaussian_wave']:.2f} A"
+        ax.plot(
+            window["wave_obs"],
+            np.asarray(gaussian_result["gaussian_model_norm"], dtype=float),
+            color="#1f77b4",
+            lw=1.3,
+            label=gaussian_label,
+        )
     ax.axvline(window["center_obs"], color="red", ls="--", lw=1.0, label=f"{line_name} at z_guess")
     ax.axvline(auto_wave, color="#1b9e77", ls=":", lw=1.5, label=f"green auto {mode} pick z={z_auto:.5f}")
     ax.axvline(adopted_wave, color="#7b3294", ls="-.", lw=1.5, label=f"purple manual/adopted z={z_adopted:.5f}")
@@ -1642,6 +1767,7 @@ def plot_redshift_zoom(
         "adopted_wave": adopted_wave,
         "adopted_z": z_adopted,
         "z": z_adopted,
+        **gaussian_result,
         "figure": fig,
     }, z_auto
 
