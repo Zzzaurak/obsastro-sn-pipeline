@@ -497,7 +497,7 @@ SPECTRAL_NOTEBOOK = [
         """
         # 本 cell 通常只需要改这三项。
         SELECTED_EMISSION_LINE = "Halpha"  # 可选示例：Halpha, Hbeta, OIII5007, OIII4959, SII6716
-        MANUAL_OBSERVED_WAVE = None  # 看图后填观测波长，例如 6701.2；第一次看图可先保留 None
+        MANUAL_OBSERVED_WAVE = 6574  # 看图后填观测波长，例如 6701.2；第一次看图可先保留 None
         REDSHIFT_SPECTRUM_INDEX = 0  # 先看下面的 spectrum_index 表，再改这里选择第几条光谱
 
         redshift_check_target = summary_raw.iloc[0]["target"] if REDSHIFT_CHECK_TARGET is None else REDSHIFT_CHECK_TARGET
