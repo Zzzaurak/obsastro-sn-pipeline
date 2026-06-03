@@ -132,7 +132,7 @@ sn-pipline/
 | Notebook | 用途 |
 |---|---|
 | `01_data_collection_and_observing.ipynb` | 目标获取、观测准备、TNS/Lasair/WISeREP 输出盘点。 |
-| `02_spectral_analysis_pipeline.ipynb` | 主光谱分析和手动调参入口：FITS 读取、手动红移、自动选线、速度、pEW/FWHM、黑体温度、宿主线指标和质检标记；`SAVE_PRODUCTS/SAVE_FIGURES=True` 时默认写出带目标名前缀的产物。 |
+| `02_spectral_analysis_pipeline.ipynb` | 主光谱分析和手动调参入口：FITS 读取、手动红移复核（第 4 节会在局部连续谱归一化后叠加高斯拟合曲线）、自动选线、速度、pEW/FWHM、黑体温度、宿主线指标和质检标记；`SAVE_PRODUCTS/SAVE_FIGURES=True` 时默认写出带目标名前缀的产物。 |
 | `03_tardis_modeling_optional.ipynb` | 可选 TARDIS 配置与模拟入口；从本地 FITS 和 02 的分析产物估计起始参数，不依赖 legacy notebook 或遗留数据。 |
 | `04_project_report.ipynb` | 中文报告 notebook，汇总科学问题、数据、分析、解释和结论。 |
 
@@ -189,7 +189,7 @@ python scripts/download_tardis_atom_data.py
 - 不要提交 `.env`、`data/`、`output/` 或真实凭证。
 - 自动谱线测量只适合作为第一版结果；正式引用速度、pEW 或 FWHM 前，应检查 `line_diagnostics_qc.csv` 或 `<RUN_TAG>_line_diagnostics_qc.csv` 中的 `qc_flag`，并人工确认 `check` 项。
 - `ppt/` 是英文最终展示；中文 notebook 和 README 是为了方便组内复现与写作。
-- 如果修改 notebook 结构，优先改 `scripts/create_deliverable_notebooks.py` 后重新生成，不要只手改 `.ipynb`。
+- 如果修改 notebook 结构，优先改 `scripts/create_deliverable_notebooks.py` 后重新生成，不要只手改 `.ipynb`。若 `notebooks/02_spectral_analysis_pipeline.ipynb` 已经有手工改动，重新生成前先确认不会覆盖这些改动。
 
 ## 未完成与后续建议
 
