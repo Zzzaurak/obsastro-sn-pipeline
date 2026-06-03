@@ -30,6 +30,7 @@ python scripts/create_deliverable_notebooks.py
 - Final slides under `ppt/` must stay English.
 - README and top-level notebooks can use Chinese explanatory text.
 - If notebook structure changes, edit `scripts/create_deliverable_notebooks.py` and regenerate notebooks; do not only hand-edit `.ipynb`.
+- In `notebooks/02_spectral_analysis_pipeline.ipynb` section 4 ("手动测红移"), keep the redshift helper `print()` output concise. Preserve the simple version that prints only line/rest wave, `z_guess`, optional TNS reference, auto line z/lambda, and one `REDSHIFT_MEASUREMENTS` dict using `redshift_plot["auto_wave"]`. Do not expand it back to the verbose purple/manual-adopted two-record output unless the user explicitly asks.
 
 ## Module Map
 

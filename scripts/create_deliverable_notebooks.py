@@ -395,11 +395,10 @@ SPECTRAL_NOTEBOOK = [
         }
 
         SAVE_PRODUCTS = False  # 写出 CSV；同一 RUN_TAG 会覆盖，自动目标 tag 不会覆盖别的目标
-        SAVE_FIGURES = True  # 写出 PNG；同一 RUN_TAG 会覆盖，自动目标 tag 不会覆盖别的目标
+        SAVE_FIGURES = False  # 写出 PNG；同一 RUN_TAG 会覆盖，自动目标 tag 不会覆盖别的目标
         PRODUCT_PREFIX = ""  # 例如 "trial" 可在目标 tag 前再加一层前缀
         OUTPUT_TAG = ""  # 空字符串表示自动用当前目标名，例如 SN2026KID；也可手动填 "trial_SN2026KID"
 
-        FIT_VISUAL_GAUSSIAN = True  # 只用于局部检查图的可视化，不作为强物理模型
         DIAGNOSTIC_TARGET = None  # 图形诊断网格只看某个目标；None 表示全部
         MAX_DIAGNOSTIC_PANELS = 12
 
@@ -491,7 +490,7 @@ SPECTRAL_NOTEBOOK = [
 
         如果一个目标有多条光谱，建议在 `REDSHIFT_MEASUREMENTS` 里填多条记录；后面会按目标取中位数红移，并显示 scatter。
 
-        方法说明：局部窗口先用 Savitzky-Golay 做移动窗口低阶多项式预平滑；然后在窗口左右两端各取一段谱的中位数，连接这两个中位数点，得到一条局部线性连续谱；最后用 `flux / continuum` 归一化。绿线是自动取峰/取谷位置；紫线是手动或最终采用位置。`z_preview` 返回绿线自动红移，`redshift_plot["adopted_z"]` 是紫线红移。TNS 红移只打印作外部参考，不参与本 notebook 的红移采用。
+        方法说明：本节只用于宿主窄发射线的红移复核，不使用第 7 节的超新星宽吸收线高斯拟合。局部窗口先用 Savitzky-Golay 做移动窗口低阶多项式预平滑；然后在窗口左右两端各取一段谱的中位数，连接这两个中位数点，得到一条局部线性连续谱；最后用 `flux / continuum` 归一化。绿线是自动取峰/取谷位置；紫线是手动或最终采用位置。`z_preview` 返回绿线自动红移，`redshift_plot["adopted_z"]` 是紫线红移。TNS 红移只打印作外部参考，不参与本 notebook 的红移采用。
         """
     ),
     code(
@@ -529,21 +528,21 @@ SPECTRAL_NOTEBOOK = [
             mode="emission",
         )
         snt.show_figure(redshift_plot.get("figure"))
+        # Keep this output concise; do not expand back to the verbose purple/manual-adopted two-record printout.
         print(f"line = {SELECTED_EMISSION_LINE}, rest_wave = {redshift_rest_wave:.3f} A")
         print(f"plot z_guess = {redshift_z_guess:.6f}")
-        if np.isfinite(redshift_tns_ref["z_tns"]):
-            print(f"TNS/public-catalog reference z = {redshift_tns_ref['z_tns']:.6f} ({redshift_tns_ref['status']}; not used in calculation)")
-        else:
-            print(f"TNS/public-catalog reference z = unavailable ({redshift_tns_ref['status']}; not used in calculation)")
-        if redshift_tns_ref.get("type_tns"):
-            print(f"TNS/public-catalog type = {redshift_tns_ref['type_tns']}")
-        print(f"green/auto line z = {z_preview:.6f}")
-        print(f"green/auto line lambda = {redshift_plot['auto_wave']:.3f} A")
-        if redshift_plot["adopted_wave"] != redshift_plot["auto_wave"]:
-            print(f"purple/manual-adopted z = {redshift_plot['adopted_z']:.6f}")
-            print(f"purple/manual-adopted lambda = {redshift_plot['adopted_wave']:.3f} A")
-        print(f"file = {redshift_spec['file']}")
-        print("下面第一条记录对应绿线自动值；如果你填了 MANUAL_OBSERVED_WAVE 且紫线更可靠，请用第二条 purple/manual 记录。")
+        try:
+            if np.isfinite(redshift_tns_ref["z_tns"]):
+                print(f"TNS/public-catalog reference z = {redshift_tns_ref['z_tns']:.6f} ({redshift_tns_ref['status']}; not used in calculation)")
+            else:
+                print(f"TNS/public-catalog reference z = unavailable ({redshift_tns_ref['status']}; not used in calculation)")
+            if redshift_tns_ref.get("type_tns"):
+                print(f"TNS/public-catalog type = {redshift_tns_ref['type_tns']}")
+        except Exception:
+            print("未找到 TNS 数据")
+        print(f"auto line z = {z_preview:.6f}")
+        print(f"auto line lambda = {redshift_plot['auto_wave']:.3f} A")
+        print("绿线调整合理后，请将一下内容填入 REDSHIFT_MEASUREMENTS")
         print({
             "target": redshift_spec["target"],
             "file": redshift_spec["file"],
@@ -552,16 +551,6 @@ SPECTRAL_NOTEBOOK = [
             "rest_wave": redshift_rest_wave,
             "observed_wave": redshift_plot["auto_wave"],
         })
-        if redshift_plot["adopted_wave"] != redshift_plot["auto_wave"]:
-            print({
-                "target": redshift_spec["target"],
-                "file": redshift_spec["file"],
-                "line": SELECTED_EMISSION_LINE,
-                "kind": "host/emission",
-                "rest_wave": redshift_rest_wave,
-                "observed_wave": redshift_plot["adopted_wave"],
-                "note": "purple/manual-adopted",
-            })
         """
     ),
     md(
@@ -637,7 +626,7 @@ SPECTRAL_NOTEBOOK = [
 
         实际测量的谱线由第 5 节的 `selected_line_plan` 决定：`TARGET_LINES` 有手动覆盖时优先用它，否则按手动类型或自动粗分类类型选择关键谱线。
 
-        方法说明：谱线测量先转到当前静止系，再用 Savitzky-Golay 移动窗口低阶多项式预平滑，并用局部线性连续谱归一化；吸收线中心取归一化谱的最小值，速度由 `rest_wave - abs_wave` 计算，pEW 由 `1 - flux/continuum` 积分，FWHM 由半深度宽度估计。紫色高斯吸收轮廓只用于后面诊断图的可视化，不作为最终科学量。黑体颜色温度用 Planck 黑体谱做非线性最小二乘拟合。宿主线指标用局部中位数连续谱和 robust noise，不做高斯拟合。
+        方法说明：谱线测量先转到当前静止系，再用 Savitzky-Golay 移动窗口低阶多项式预平滑，并用局部线性连续谱归一化；随后直接在归一化谱上拟合吸收型高斯，最终的吸收中心 `abs_wave`、速度 `velocity_kms`、线深 `depth` 和 `FWHM_A` 都来自该高斯拟合。pEW 仍由 `1 - flux/continuum` 的正面积直接积分，不改成高斯面积。黑体颜色温度用 Planck 黑体谱做非线性最小二乘拟合。宿主线指标用局部中位数连续谱和 robust noise，不做高斯拟合。
         """
     ),
     code(
@@ -647,7 +636,6 @@ SPECTRAL_NOTEBOOK = [
             line_smooth_window=LINE_SMOOTH_WINDOW,
             line_edge_fraction=LINE_EDGE_FRACTION,
             line_param_overrides=LINE_PARAM_OVERRIDES,
-            fit_visual_gaussian=FIT_VISUAL_GAUSSIAN,
         )
 
         summary, line_df, line_qc, bb_df, host_lines, host_summary, target_status = snt.measure_all_features(
@@ -658,14 +646,14 @@ SPECTRAL_NOTEBOOK = [
         )
 
         display(target_status)
-        display(line_qc[["target", "file", "line", "velocity_kms", "pEW_A", "FWHM_A", "depth", "qc_flag", "qc_note"]].head(20))
+        display(line_qc[["target", "file", "line", "fit_method", "abs_wave", "velocity_kms", "velocity_err_kms", "pEW_A", "FWHM_A", "FWHM_err_A", "depth", "fit_center_err_A", "fit_sigma_A", "fit_sigma_err_A", "fit_depth_err", "fit_chi2_red", "extrema_wave_A", "extrema_depth", "qc_flag", "qc_note"]].head(20))
         """
     ),
     md(
         """
         ## 8. 谱线局部诊断图：中心、吸收谷、拟合和 pEW 区域
 
-        方法说明：每个谱线面板分上下两行。上图显示原始 flux、Savitzky-Golay 预平滑后的 flux，以及橙色局部线性连续谱；下图显示 `flux / continuum` 后的归一化谱。紫色线是“线性基线 + 高斯吸收”的视觉拟合，只帮助判断中心/宽度是否合理，不覆盖自动测得的速度、pEW、FWHM。浅紫色区域是 pEW 积分区域，即归一化谱中 `1 - flux/continuum` 的正面积；它不是误差带或高斯置信区间。
+        方法说明：每个谱线面板分上下两行。上图显示原始 flux、Savitzky-Golay 预平滑后的 flux，以及橙色局部线性连续谱；下图显示 `flux / continuum` 后的归一化谱。紫色线是本次测量实际使用的高斯吸收拟合，绿色线是高斯中心，灰色细线可对照旧的极值位置。浅紫色区域是 pEW 积分区域，即归一化谱中 `1 - flux/continuum` 的正面积；它不是误差带或高斯置信区间。
         """
     ),
     code(
@@ -717,14 +705,14 @@ SPECTRAL_NOTEBOOK = [
         snt.show_figure(pew_fig)
         """
     ),
-    md("## 12. 科学量图：FWHM\n\n方法说明：本步只绘制第 7 节由吸收线半深度宽度估计出的 FWHM，不再做新拟合。"),
+    md("## 12. 科学量图：FWHM\n\n方法说明：本步只绘制第 7 节由高斯拟合 sigma 换算得到的 FWHM，不再做新拟合。"),
     code(
         """
         fwhm_fig = snt.plot_quantity_by_target(line_qc, "FWHM_A", "FWHM (Angstrom)", "Line FWHM evolution", snt.tagged_filename("fwhm_evolution.png", RUN_TAG), FIG_DIR, save_figures=SAVE_FIGURES)
         snt.show_figure(fwhm_fig)
         """
     ),
-    md("## 13. 科学量图：线深\n\n方法说明：本步只绘制第 7 节由归一化谱线谷值计算出的线深，不再做新拟合。"),
+    md("## 13. 科学量图：线深\n\n方法说明：本步只绘制第 7 节高斯拟合得到的线深，不再做新拟合。"),
     code(
         """
         depth_fig = snt.plot_quantity_by_target(line_qc, "depth", "Line depth", "Absorption-line depth evolution", snt.tagged_filename("line_depth_evolution.png", RUN_TAG), FIG_DIR, save_figures=SAVE_FIGURES)
@@ -772,22 +760,43 @@ SPECTRAL_NOTEBOOK = [
         - 灰色：局部原始光谱。
         - 黑色：平滑后的真实观测谱线轮廓。
         - 橙色：局部线性连续谱。
-        - 紫色：为了可视化而拟合的高斯吸收轮廓，不作为强物理模型。
-        - 红虚线：谱线静止波长；绿虚线：自动选择的吸收谷。
+        - 紫色：第 7 节实际用于测量的高斯吸收轮廓。
+        - 灰虚线：旧的极值位置，仅作对照。
+        - 红虚线：谱线静止波长；绿虚线：高斯中心。
 
-        方法说明：这张图是第 7 节单条谱线测量的放大复核。连续谱为局部线性模型，紫色为线性基线 + 高斯吸收的视觉拟合，pEW 仍来自连续谱与平滑谱之间的直接积分。
+        方法说明：这张图是第 7 节单条谱线测量的放大复核。连续谱为局部线性模型，紫色为第 7 节同一个高斯拟合结果，pEW 仍来自连续谱与平滑谱之间的直接积分；灰虚线给出旧的极值位置，便于对照。
         """
     ),
     code(
         """
         CHECK_TARGET_LOCAL = summary.iloc[0]["target"] if CHECK_TARGET is None else CHECK_TARGET
-        CHECK_LINE_KEY = CHECK_LINE  # 例如 "Halpha"；None 表示使用该目标自动线表的第一条
+        CHECK_LINE_KEY = CHECK_LINE  # 例如 "Halpha"；None 表示优先使用当前光谱里 qc=adopt/check 的第一条线
         CHECK_SPECTRUM_INDEX = 0  # 先看下面的 spectrum_index 表，再改这里选择第几条光谱
 
         display(snt.spectrum_choice_table(spectra, CHECK_TARGET_LOCAL))
+        check_items = sorted(
+            [spec for spec in spectra if spec["target"] == snt.target_key(CHECK_TARGET_LOCAL)],
+            key=lambda spec: pd.Timestamp.max if pd.isna(spec["date_obs"]) else spec["date_obs"],
+        )
+        check_spec = check_items[int(CHECK_SPECTRUM_INDEX)]
         if CHECK_LINE_KEY is None:
-            first_spec = next(spec for spec in spectra if spec["target"] == snt.target_key(CHECK_TARGET_LOCAL))
-            CHECK_LINE_KEY = snt.line_keys_for(first_spec, TARGET_LINES)[0]
+            checked = line_qc[
+                line_qc["target"].eq(snt.target_key(CHECK_TARGET_LOCAL))
+                & line_qc["file"].eq(check_spec["file"])
+                & line_qc["status"].eq("ok")
+                & line_qc["qc_flag"].isin(["adopt", "check"])
+            ].copy()
+            if not checked.empty:
+                checked["qc_order"] = checked["qc_flag"].map({"adopt": 0, "check": 1}).fillna(2)
+                CHECK_LINE_KEY = checked.sort_values(["qc_order", "line"]).iloc[0]["line"]
+            else:
+                CHECK_LINE_KEY = snt.line_keys_for(check_spec, TARGET_LINES)[0]
+
+        print(f"line check target={snt.target_key(CHECK_TARGET_LOCAL)}, spectrum_index={CHECK_SPECTRUM_INDEX}, line={CHECK_LINE_KEY}")
+        print(f"file = {check_spec['file']}")
+        print(f"z = {check_spec.get('z')} ({check_spec.get('z_source')})")
+        if not np.isfinite(check_spec.get("z", np.nan)):
+            print("WARNING: 当前光谱还没有采用红移；静止系谱线窗口和绿线位置不能用于科学判断。请先在 REDSHIFT_MEASUREMENTS 填入第 4 节确认的宿主窄线红移。")
 
         check_result, check_fig = snt.plot_line_check(
             spectra,
@@ -851,7 +860,7 @@ SPECTRAL_NOTEBOOK = [
         2. `qc_flag=adopt` 的自动测量；
         3. 或者经过上面局部检查图确认后的 `qc_flag=check` 测量。
 
-        如果某条线的吸收谷选错，优先在配置区用 `LINE_PARAM_OVERRIDES` 调整 `half_width`、`smooth_window`、`edge_fraction`，然后重新运行批量测量之后的 cells。
+        如果某条线的高斯中心仍然落到错误吸收谷，优先在配置区用 `LINE_PARAM_OVERRIDES` 调整 `half_width`、`smooth_window`、`edge_fraction`，然后重新运行批量测量之后的 cells。
         """
     ),
 ]
