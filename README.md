@@ -70,9 +70,9 @@ python scripts/build_analysis_products.py
 # 4. 生成 slides 专用图
 python scripts/build_presentation_figures.py
 
-# 5. 重新生成 4 个精简 notebook
-python scripts/create_deliverable_notebooks.py
 ```
+
+顶层 `notebooks/` 现在直接手工维护，不再通过脚本重生成。`02_spectral_analysis_pipeline.ipynb` 是主分析和手动调参入口，后续说明、图注和输出都以它为准。
 
 最终 slides 位于 `ppt/`：
 
@@ -113,7 +113,6 @@ sn-pipline/
 | `fetch_aux_data.py` | 原有 | 读取 `.env` 和配置，下载 Lasair/ZTF 光变曲线与 WISeREP 光谱，保存 CSV、图片和清洁 `.dat` 光谱。等价入口：`python -m src.fetch_aux_data`。 |
 | `build_analysis_products.py` | 新增 | 调用 `src.spectral_pipeline.build_all()`，批量读取 `data/SN*/` 的一维 FITS 光谱，生成目标状态、谱线速度、pEW/FWHM、黑体颜色温度、宿主线指标和质检标记。 |
 | `build_presentation_figures.py` | 新增 | 从 `output/analysis_pipeline/figures/` 复制或重组 slides 需要的图，写到 `ppt/figures/`；读取目标状态时会兼容 `SN2026KID_target_status.csv` 这类逐目标调参产物。 |
-| `create_deliverable_notebooks.py` | 新增 | 从脚本源头重新生成 4 个精简 notebook，使 notebook 结构稳定、说明文字统一为中文，并避免旧探索 notebook 混入正式流程。 |
 | `download_tardis_atom_data.py` | 原有 | 首次运行 TARDIS 前下载 `kurucz_cd23_chianti_H_He_latest.h5` 到 `data/`，并更新 TARDIS 内部配置指向项目数据目录。 |
 
 ## `src/` 核心模块
@@ -136,7 +135,7 @@ sn-pipline/
 | Notebook | 用途 |
 |---|---|
 | `01_data_collection_and_observing.ipynb` | 目标获取、观测准备、TNS/Lasair/WISeREP 输出盘点。 |
-| `02_spectral_analysis_pipeline.ipynb` | 主光谱分析和手动调参入口：FITS 读取、手动红移复核（第 4 节会在局部连续谱归一化后叠加高斯拟合曲线）、自动选线、速度、pEW/FWHM、黑体温度、宿主线指标和质检标记；`SAVE_PRODUCTS/SAVE_FIGURES=True` 时默认写出带目标名前缀的产物。 |
+| `02_spectral_analysis_pipeline.ipynb` | 主光谱分析和手动调参入口：FITS 读取、手动红移复核（第 4 节会在局部连续谱归一化后叠加高斯拟合曲线）、自动选线、速度、pEW/FWHM、黑体温度、宿主线指标和质检标记；`SAVE_PRODUCTS/SAVE_FIGURES=True` 时默认写出带目标名前缀的产物。该 notebook 直接编辑维护，不再依赖生成脚本。 |
 | `03_tardis_modeling_optional.ipynb` | 可选 TARDIS 配置与模拟入口；从本地 FITS 和 02 的分析产物估计起始参数，不依赖 legacy notebook 或遗留数据。 |
 | `04_project_report.ipynb` | 中文报告 notebook，汇总科学问题、数据、分析、解释和结论。 |
 
@@ -193,7 +192,7 @@ python scripts/download_tardis_atom_data.py
 - 不要提交 `.env`、`data/`、`output/` 或真实凭证。
 - 自动谱线测量只适合作为第一版结果；正式引用速度、pEW 或 FWHM 前，应检查 `line_diagnostics_qc.csv` 或 `<RUN_TAG>_line_diagnostics_qc.csv` 中的 `qc_flag`，并人工确认 `check` 项。
 - `ppt/` 是英文最终展示；中文 notebook 和 README 是为了方便组内复现与写作。
-- 如果修改 notebook 结构，优先改 `scripts/create_deliverable_notebooks.py` 后重新生成，不要只手改 `.ipynb`。若 `notebooks/02_spectral_analysis_pipeline.ipynb` 已经有手工改动，重新生成前先确认不会覆盖这些改动。
+- 如果修改 notebook 结构，直接编辑对应 `.ipynb`，并同步更新 README、`AGENTS.md` 和 `notebooks/README.md` 里的说明。
 
 ## 未完成与后续建议
 

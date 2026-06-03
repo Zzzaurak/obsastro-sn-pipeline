@@ -21,7 +21,6 @@ python scripts/fetch_target_params.py
 python scripts/fetch_aux_data.py
 python scripts/build_analysis_products.py
 python scripts/build_presentation_figures.py
-python scripts/create_deliverable_notebooks.py
 ```
 
 - Main scientific tables are under `output/analysis_pipeline/*.csv`. Batch script outputs are unprefixed; interactive `02` runs can write `<RUN_TAG>_*.csv` to avoid overwriting other targets.
@@ -29,8 +28,7 @@ python scripts/create_deliverable_notebooks.py
 - Slide-specific copies/composites are under `ppt/figures/`.
 - Final slides under `ppt/` must stay English.
 - README and top-level notebooks can use Chinese explanatory text.
-- If notebook structure changes, edit `scripts/create_deliverable_notebooks.py` and regenerate notebooks; do not only hand-edit `.ipynb`.
-- Do not casually run `scripts/create_deliverable_notebooks.py`; it rewrites the top-level notebooks and can overwrite manual edits in `notebooks/02_spectral_analysis_pipeline.ipynb`. Only run it when you intend to regenerate the deliverables.
+- Top-level notebooks are edited directly; treat `notebooks/02_spectral_analysis_pipeline.ipynb` as the canonical source for the spectral-analysis workflow and keep README/notebook README text in sync when you change it.
 - In `notebooks/02_spectral_analysis_pipeline.ipynb` section 4 ("手动测红移"), keep the redshift helper `print()` output concise. Preserve the simple version that prints only line/rest wave, `z_guess`, optional TNS reference, auto line z/lambda, and one `REDSHIFT_MEASUREMENTS` dict using `redshift_plot["auto_wave"]`. Do not expand it back to the verbose purple/manual-adopted two-record output unless the user explicitly asks.
 
 ## Module Map
@@ -44,7 +42,6 @@ python scripts/create_deliverable_notebooks.py
 | `src/fetch_aux_data.py` | **Aux data orchestrator**: Lasair light curve + WISeREP spectra acquisition | `run(config_path)` |
 | `scripts/build_analysis_products.py` | **Science-product builder**: command-line wrapper around `src.spectral_pipeline.build_all()` | `main()` |
 | `scripts/build_presentation_figures.py` | **Slide-figure builder**: copies/recomposes analysis figures into `ppt/figures/` | `main()` |
-| `scripts/create_deliverable_notebooks.py` | **Notebook generator**: regenerates the four curated top-level notebooks with Chinese explanatory text | `main()` |
 | `src/lasair.py` | **Lasair light curve**: ZTF light curve download, CSV export, matplotlib plot with filters | `fetch_lasair_object()`, `plot_lightcurve()` |
 | `src/wiserep.py` | **WISeREP spectra**: spectrum metadata search, file download, ASCII parsing, plotting | `fetch_spectra_metadata()`, `download_spectrum_file()`, `plot_spectra()` |
 | `src/utils.py` | HTTP client, TNS credentials manager (`TnsCredentials`), `.env` loader, CSV I/O, rate-limit tracking | `load_env_file()`, `get_tns_credentials()`, `tns_auth_headers()` |
@@ -330,8 +327,6 @@ python scripts/fetch_aux_data.py
 python -m src.fetch_aux_data
 # Current batch science products:
 python scripts/build_analysis_products.py
-# Notebook regeneration:
-python scripts/create_deliverable_notebooks.py
 ```
 
 ## Do NOT
