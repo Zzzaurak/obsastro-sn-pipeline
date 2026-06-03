@@ -49,6 +49,10 @@ WISEREP_API_KEY=
 - `wiserep`: 是否启用 WISeREP 光谱。
 - `output`: 输出目录、找星图视场。
 
+## 数据
+
+观测数据以 `data/<观测目标>/*` 的格式存放
+
 ## 当前主流程
 
 ```bash
