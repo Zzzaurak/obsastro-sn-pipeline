@@ -38,6 +38,7 @@ notebooks/legacy
 
 # tests
 tests/
+__pycache__/
 
 # others
 paper/
