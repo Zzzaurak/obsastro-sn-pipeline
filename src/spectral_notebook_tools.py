@@ -578,6 +578,57 @@ def plot_tardis_comparison(
     return fig
 
 
+def plot_observed_spectrum_with_tardis_overlay(
+    observed_spec: dict,
+    tardis_wave: np.ndarray | None = None,
+    tardis_flux: np.ndarray | None = None,
+    *,
+    z: float,
+    target: str,
+    output_path: Path | None = None,
+):
+    obs_wave = np.asarray(observed_spec["wave"], dtype=float)
+    obs_flux = normalize_for_comparison(np.asarray(observed_spec["flux"], dtype=float))
+    obs_valid = np.isfinite(obs_wave) & np.isfinite(obs_flux)
+
+    fig, ax = plt.subplots(figsize=(10.5, 4.6))
+    ax.plot(obs_wave[obs_valid], obs_flux[obs_valid], color="black", lw=0.8, label="Observed spectrum")
+
+    if tardis_wave is not None and tardis_flux is not None:
+        sim_wave_rest = np.asarray(tardis_wave, dtype=float)
+        sim_flux = normalize_for_comparison(np.asarray(tardis_flux, dtype=float))
+        sim_wave_obs = rest_to_observed(sim_wave_rest, z)
+
+        sim_valid = np.isfinite(sim_wave_obs) & np.isfinite(sim_flux)
+        if obs_valid.any():
+            lo = np.nanmin(obs_wave[obs_valid])
+            hi = np.nanmax(obs_wave[obs_valid])
+            sim_valid &= (sim_wave_obs >= lo) & (sim_wave_obs <= hi)
+
+        if sim_valid.sum() > 1:
+            order = np.argsort(sim_wave_obs[sim_valid])
+            ax.plot(
+                sim_wave_obs[sim_valid][order],
+                sim_flux[sim_valid][order],
+                color="#d95f02",
+                lw=1.0,
+                alpha=0.85,
+                label="TARDIS synthetic spectrum",
+            )
+
+    ax.set_xlabel("Observed wavelength (Angstrom)")
+    ax.set_ylabel("Normalized flux / luminosity density")
+    ax.set_title(f"{target}: observed spectrum with optional TARDIS overlay")
+    ax.grid(alpha=0.25)
+    ax.legend(fontsize=8)
+    add_rest_top_axis(ax, z)
+
+    if output_path is not None:
+        output_path = Path(output_path)
+        save_figure(fig, output_path.parent, output_path.name, enabled=True)
+    return fig
+
+
 def apply_redshift_overrides(spectra: list[dict], redshift_by_target: dict[str, float]) -> list[dict]:
     updated = []
     for spec in spectra:

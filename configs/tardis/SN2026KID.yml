@@ -7,8 +7,8 @@ model:
   structure:
     type: specific
     velocity:
-      start: 7937.5 km/s
-      stop: 17198.0 km/s
+      start: 5764.0 km/s
+      stop: 12488.7 km/s
       num: 20
     density:
       type: branch85_w7
