@@ -25,6 +25,14 @@ python -m ipykernel install --user --name astro_env --display-name "Python (astr
 
 `astro_env` 中 `numpy` 必须保持 `1.23.5`，因为 astrodash 与旧版 tensorflow 对新版 numpy 不兼容。环境文件已经在 conda 层和 pip 层同时锁定该版本；迁移到新电脑时不要手动混装。
 
+`astro_env` 的 TensorFlow 依赖使用 `tensorflow[and-cuda]==2.15.1`，用于在 Linux/WSL 下给 DASH 推理安装 CUDA/cuDNN 运行库。更新现有环境时运行：
+
+```bash
+conda activate astro_env
+python -m pip install --upgrade "tensorflow[and-cuda]==2.15.1" "numpy==1.23.5"
+python -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU'))"
+```
+
 依赖入口以 `envs/environment_astro_env.yml` 为准；旧的 `requirements.txt` 已删除，避免同学用 pip 安装出缺少 Jupyter 组件或 numpy 版本不对的环境。
 
 ## 凭证与配置
@@ -48,6 +56,13 @@ WISEREP_API_KEY=
 - `lasair`: 是否启用 Lasair 光变曲线。
 - `wiserep`: 是否启用 WISeREP 光谱。
 - `output`: 输出目录、找星图视场。
+
+加速参数集中在 `configs/acceleration.json`：
+
+- `runtime`: GPU 开关、`CUDA_VISIBLE_DEVICES`、Superfit 最大并行 worker、每个 worker 的 BLAS 线程数。
+- `superfit`: NGSF/Superfit 批量重跑 worker、红移网格、分辨率、是否跳过已有 CSV。
+- `dash`: AstroDash 是否使用 GPU、是否计算较慢的 rlap、输出 top-N。
+- `tardis`: 只写入生成的 TARDIS YAML；控制 `montecarlo.nthreads`、packet 数、迭代数和 spectrum 网格。实际 `tardis` 环境的 CUDA/Numba-CUDA 安装仍需在该环境中单独完成。
 
 ## 数据
 
@@ -188,6 +203,8 @@ python scripts/download_tardis_atom_data.py
 该脚本不依赖当前工作目录，会把 `~/.astropy/config/tardis_internal_config.yml` 中的 `data_dir` 写成当前 clone 的项目 `data/` 绝对路径，并在同一目录下载或复用 `kurucz_cd23_chianti_H_He_latest.h5`。如果只需要修复路径、不想联网下载，可运行 `python scripts/download_tardis_atom_data.py --configure-only`。
 
 然后使用 `notebooks/03_tardis_modeling_optional.ipynb`。该 notebook 会从本地 FITS 和 02 的 `*_manual_redshift_summary.csv`、`*_target_status.csv`、`*_line_diagnostics_qc.csv` 等产物估计第一版 `z/type/velocity/time_explosion/luminosity`，生成 `configs/tardis/<target>.yml`，并在 `RUN_TARDIS=True` 时运行模拟。旧版归档 notebook 只作追溯，不是复现依赖。当前安装的是 TARDIS v2 dev，API 与网上很多 v1 示例不同；关键差异见 `AGENTS.md`。
+
+`configs/acceleration.json` 中的 `tardis` 段会自动叠加到新生成的 `configs/tardis/<target>.yml`，例如 `montecarlo.nthreads`、`no_of_packets`、`iterations`、`last_no_of_packets`、`no_of_virtual_packets`、`spectrum.num` 和 integrated spectrum 的 `compute/points`。这一步只改 YAML，不会安装或修改 `tardis` conda 环境。
 
 ## 注意事项
 

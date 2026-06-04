@@ -51,6 +51,7 @@ python scripts/build_presentation_figures.py
 | `src/coordinates.py` | Coordinate format conversion (sexagesimal ↔ decimal degrees) | `deg_to_hms()`, `deg_to_dms()`, `sexagesimal_to_deg()` |
 | `src/time_utils.py` | Julian Date conversion, GMST, solar position (low-precision), altitude formula | `datetime_to_jd()`, `altitude_deg()`, `sun_ra_dec_approx()` |
 | `src/config.py` | JSON config loading with flattening, defaults, type coercion | `load_config()`, `flatten_config()` |
+| `src/acceleration_config.py` | Superfit/DASH/TARDIS acceleration config loading, worker/thread resolution, runtime env setup, TARDIS YAML overlays | `load_acceleration_config()`, `apply_runtime_environment()`, `apply_tardis_config_overrides()` |
 | `scripts/download_tardis_atom_data.py` | **TARDIS atomic data downloader**: downloads `kurucz_cd23_chianti_H_He_latest.h5` into `data/`, updates `~/.astropy/config/tardis_internal_config.yml` to point to project `data/` | `download_atom_data()` |
 
 ## Configuration
@@ -64,6 +65,17 @@ Five sections, all flattened at load time:
 - **`lasair`**: `lasair_enabled`
 - **`wiserep`**: `wiserep_enabled`
 - **`output`**: `out_dir`, `report_file` (template with `{date}` and `{target}` placeholders), `finder_fov_arcmin`
+
+### `configs/acceleration.json`
+
+Central acceleration knob file for interactive Superfit/DASH/TARDIS helper workflows:
+
+- **`runtime`**: `gpu`, `cuda_visible_devices`, `max_workers`, `blas_threads_per_worker`
+- **`superfit`**: `workers`, `rerun_existing`, `z_range`, `z_step`, `resolution`, `how_many_plots`, `prefer_known_redshift`
+- **`dash`**: `gpu`, `known_z`, `rlap_scores`, `top_n`, `batch_size`
+- **`tardis`**: writes YAML overrides only; controls `nthreads`, `numba_num_threads`, `spectrum_source`, `montecarlo` packet/iteration counts, and `spectrum` grid/integrated options
+
+`src.spectral_notebook_tools.run_superfit_batch()`, `run_dash_batch()`, and `build_tardis_config_from_context()` read this file by default from the project root. `tardis` environment package changes are intentionally separate from this repository config.
 
 ### `.env`
 
@@ -100,7 +112,7 @@ TARDIS simulation baseline for Type Ia SNe. YAML config with 7 sections (keys re
 | `model.structure` | no | `type: specific` with `velocity` (start/stop/num) + `density` (type: `branch85_w7`, `exponential`, `power_law`, or `uniform`) |
 | `model.abundances` | no | `type: uniform` with element mass fractions summing to 1.0; or `type: file` referencing an external abundance file |
 | `plasma` | no | `ionization` (lte/nebular), `excitation` (lte/dilute-lte), `radiative_rates_type` (dilute-blackbody/detailed), `line_interaction_type` (macroatom/scatter) |
-| `montecarlo` | no | `seed`, `no_of_packets`, `iterations`, `last_no_of_packets`, `no_of_virtual_packets`, `convergence_strategy` (damped with damping_constant, threshold, lock_t_inner_cycles, t_inner_update_exponent) |
+| `montecarlo` | no | `seed`, `nthreads`, `no_of_packets`, `iterations`, `last_no_of_packets`, `no_of_virtual_packets`, `convergence_strategy` (damped with damping_constant, threshold, lock_t_inner_cycles, t_inner_update_exponent) |
 
 **Density profile types:**
 - `branch85_w7` — 7th-order polynomial fit to W7 Ia model, parametrised by time_explosion only (w7_time_0/w7_rho_0/w7_v_0 are fixed)
@@ -235,7 +247,7 @@ The current top-level TARDIS entry point is `notebooks/03_tardis_modeling_option
    - `epoch_days` starts from manual override, otherwise median `phase_days` plus a type-dependent rise-time default.
    - `luminosity_requested` starts from manual log(Lsun), or apparent magnitude + Planck18 luminosity distance, or a conservative type default.
    - `velocity start/stop` starts from adopted/check line velocity; for Ia, the photospheric proxy uses ~0.7×line velocity.
-3. **Build YAML config** — loads `configs/tardis/base_Ia.yml` template, overrides supernova/model/velocity params, adjusts rough abundances for non-Ia families, writes to `configs/tardis/{TARGET}.yml`
+3. **Build YAML config** — loads `configs/tardis/base_Ia.yml` template, overrides supernova/model/velocity params, adjusts rough abundances for non-Ia families, applies `configs/acceleration.json` TARDIS YAML overrides, writes to `configs/tardis/{TARGET}.yml`
 4. **Check atomic data** — verifies `data/kurucz_cd23_chianti_H_He_latest.h5` exists (~212 MB); if missing, instructs user to run `scripts/download_tardis_atom_data.py`
 5. **Run simulation** — `run_tardis(config_path, show_convergence_plots=False, log_level="WARNING")` → returns `Simulation` object
 6. **Compare spectra** — de-redshifts selected local FITS spectrum to rest frame, normalises both, plots overlay + residual in 2-panel figure

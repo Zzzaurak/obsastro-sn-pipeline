@@ -19,7 +19,7 @@ dependencies:
     - numpy==1.23.5    # <=1.23.5 required by astrodash; TF<2.16 also needs <1.24
     - astropy>=5.0
     - astroquery>=0.4
-    - tensorflow<2.16
+    - "tensorflow[and-cuda]==2.15.1"
     - astrodash
     - NGSF==0.0.2
     - quantities<0.16  # keep numpy==1.23.5 compatible for astrodash/tensorflow

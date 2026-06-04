@@ -1,0 +1,41 @@
+{
+  "profile": "balanced",
+  "runtime": {
+    "gpu": "auto",
+    "cuda_visible_devices": "0",
+    "max_workers": "auto",
+    "blas_threads_per_worker": 1
+  },
+  "superfit": {
+    "workers": "auto",
+    "rerun_existing": false,
+    "z_range": [0.0, 0.08],
+    "z_step": 0.005,
+    "resolution": 30,
+    "how_many_plots": 5,
+    "prefer_known_redshift": true
+  },
+  "dash": {
+    "gpu": "auto",
+    "known_z": "auto",
+    "rlap_scores": false,
+    "top_n": 5,
+    "batch_size": "all"
+  },
+  "tardis": {
+    "nthreads": "auto",
+    "numba_num_threads": "auto",
+    "spectrum_source": "real",
+    "montecarlo": {
+      "no_of_packets": 50000,
+      "iterations": 10,
+      "last_no_of_packets": 100000,
+      "no_of_virtual_packets": 3
+    },
+    "spectrum": {
+      "num": 10000,
+      "integrated_compute": "Automatic",
+      "integrated_points": 1000
+    }
+  }
+}

@@ -7,9 +7,11 @@ while reusing the project-level logic in `src.spectral_pipeline`.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Iterable
 
@@ -18,6 +20,13 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import curve_fit
 
+from src.acceleration_config import (
+    apply_runtime_environment,
+    apply_tardis_config_overrides,
+    load_acceleration_config,
+    resolve_runtime_worker_cap,
+    resolve_worker_count,
+)
 from src import spectral_pipeline as sp
 
 
@@ -481,10 +490,13 @@ def build_tardis_config_from_context(
     project_root: Path,
     base_config_path: Path | None = None,
     output_config_path: Path | None = None,
+    acceleration_config: dict | str | Path | None = None,
 ) -> tuple[dict, Path]:
     import yaml
 
     project_root = Path(project_root)
+    accel = load_acceleration_config(project_root, acceleration_config)
+    apply_runtime_environment(accel)
     base_config_path = base_config_path or project_root / "configs" / "tardis" / "base_Ia.yml"
     output_config_path = output_config_path or project_root / "configs" / "tardis" / f"{context['target']}.yml"
     config = yaml.safe_load(base_config_path.read_text())
@@ -516,17 +528,51 @@ def build_tardis_config_from_context(
             "S": 0.02,
         }
 
+    apply_tardis_config_overrides(config, accel)
     output_config_path.parent.mkdir(parents=True, exist_ok=True)
     output_config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
     return config, output_config_path
 
 
-def extract_tardis_spectrum_arrays(sim) -> tuple[np.ndarray, np.ndarray]:
-    spectrum = sim.spectrum_solver.spectrum_real_packets
+def extract_tardis_spectrum_arrays(sim, spectrum_source: str = "real") -> tuple[np.ndarray, np.ndarray]:
+    source = str(spectrum_source or "real").strip().lower()
+    attr_by_source = {
+        "real": "spectrum_real_packets",
+        "virtual": "spectrum_virtual_packets",
+        "integrated": "spectrum_integrated",
+    }
+    attr = attr_by_source.get(source, "spectrum_real_packets")
+    spectrum = getattr(sim.spectrum_solver, attr, None)
+    if spectrum is None:
+        raise ValueError(f"TARDIS spectrum source {source!r} is not available on this simulation")
     wave = np.asarray(spectrum.wavelength.value, dtype=float)
     flux = np.asarray(spectrum.luminosity_density_lambda.value, dtype=float)
     order = np.argsort(wave)
     return wave[order], flux[order]
+
+
+def tardis_compute_status_message(config: dict, cuda_available: bool | None = None) -> str:
+    """Return a concise warning/status line for TARDIS integrated-spectrum compute mode."""
+    compute = str(config.get("spectrum", {}).get("integrated", {}).get("compute", "CPU")).strip()
+    if cuda_available is None:
+        try:
+            from numba import cuda
+
+            cuda_available = bool(cuda.is_available())
+        except Exception:
+            cuda_available = False
+
+    if compute.lower() == "automatic":
+        if cuda_available:
+            return "TARDIS integrated compute = Automatic; CUDA GPU is available."
+        return "WARNING: TARDIS integrated compute = Automatic but no CUDA GPU is available; TARDIS will use CPU."
+    if compute.upper() == "GPU" and not cuda_available:
+        return "WARNING: TARDIS integrated compute = GPU but no CUDA GPU is available; this run will fail unless compute is changed to Automatic or CPU."
+    return f"TARDIS integrated compute = {compute}."
+
+
+def print_tardis_compute_status(config: dict) -> None:
+    print(tardis_compute_status_message(config))
 
 
 def normalize_for_comparison(flux: np.ndarray) -> np.ndarray:
@@ -939,6 +985,47 @@ def local_spectrum_text_files(project_root: Path, targets: Iterable[str] | None 
     return files
 
 
+def _run_superfit_subprocess(task: dict[str, object]) -> dict[str, object]:
+    project_root = Path(task["project_root"])
+    spec_file = Path(task["spec_file"])
+    out_dir = Path(task["out_dir"])
+    result_csv = Path(task["result_csv"])
+    params = task["params"]
+    runner_code = str(task["runner_code"])
+    env = dict(task["env"])
+    rerun_existing = bool(task["rerun_existing"])
+
+    target = target_key(spec_file.parent.name)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if result_csv.exists() and not rerun_existing:
+        return {
+            "target": target,
+            "file": str(spec_file.relative_to(project_root)),
+            "result_csv": str(result_csv.relative_to(project_root)),
+            "status": "skipped_existing",
+            "stdout": "",
+            "stderr": "",
+        }
+
+    (out_dir / "parameters_used.json").write_text(json.dumps(params, ensure_ascii=False, indent=2), encoding="utf-8")
+    completed = subprocess.run(
+        [sys.executable, "-c", runner_code, json.dumps(params)],
+        cwd=str(project_root),
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+    status = "ok" if completed.returncode == 0 and result_csv.exists() else "failed"
+    return {
+        "target": target,
+        "file": str(spec_file.relative_to(project_root)),
+        "result_csv": str(result_csv.relative_to(project_root)) if result_csv.exists() else "",
+        "status": status,
+        "stdout": completed.stdout.strip()[-500:],
+        "stderr": completed.stderr.strip()[-500:],
+    }
+
+
 def run_superfit_batch(
     project_root: Path,
     *,
@@ -948,8 +1035,18 @@ def run_superfit_batch(
     z_step: float = 0.005,
     resolution: int = 30,
     how_many_plots: int = 5,
+    acceleration_config: dict | str | Path | None = None,
 ) -> pd.DataFrame:
     """Run NGSF/Superfit on local 2-column spectra under data/SN*/."""
+    project_root = Path(project_root)
+    accel = load_acceleration_config(project_root, acceleration_config)
+    sf_config = accel.get("superfit", {})
+    z_range = tuple(sf_config.get("z_range", z_range))
+    z_step = float(sf_config.get("z_step", z_step))
+    resolution = int(sf_config.get("resolution", resolution))
+    how_many_plots = int(sf_config.get("how_many_plots", how_many_plots))
+    rerun_existing = bool(sf_config.get("rerun_existing", False))
+
     z_by_target = {target_key(k): sp.parse_float(v) for k, v in (z_by_target or {}).items()}
     files = local_spectrum_text_files(project_root, targets)
     if not files:
@@ -988,11 +1085,13 @@ fit.superfit()
 print(fit.results_path)
 '''
 
-    rows = []
+    env = dict(apply_runtime_environment(accel, environ=os.environ.copy()))
+    runtime_cap = resolve_runtime_worker_cap(accel, total_items=len(files))
+    workers = resolve_worker_count(sf_config.get("workers", "auto"), total_items=len(files), max_workers=runtime_cap)
+    tasks = []
     for spec_file in files:
         target = target_key(spec_file.parent.name)
         out_dir = spec_file.parent / "superfit"
-        out_dir.mkdir(parents=True, exist_ok=True)
         z_exact = z_by_target.get(target, np.nan)
         use_exact_z = bool(np.isfinite(z_exact))
         params = {
@@ -1021,25 +1120,29 @@ print(fit.results_path)
             "Alam_low": -1.5,
             "Alam_interval": 0.5,
         }
-        (out_dir / "parameters_used.json").write_text(json.dumps(params, ensure_ascii=False, indent=2), encoding="utf-8")
-        completed = subprocess.run(
-            [sys.executable, "-c", runner_code, json.dumps(params)],
-            cwd=str(project_root),
-            text=True,
-            capture_output=True,
-        )
-        result_csv = out_dir / f"{spec_file.stem}.csv"
-        status = "ok" if completed.returncode == 0 and result_csv.exists() else "failed"
-        rows.append(
+        tasks.append(
             {
-                "target": target,
-                "file": str(spec_file.relative_to(project_root)),
-                "result_csv": str(result_csv.relative_to(project_root)) if result_csv.exists() else "",
-                "status": status,
-                "stdout": completed.stdout.strip()[-500:],
-                "stderr": completed.stderr.strip()[-500:],
+                "project_root": str(project_root),
+                "spec_file": str(spec_file),
+                "out_dir": str(out_dir),
+                "result_csv": str(out_dir / f"{spec_file.stem}.csv"),
+                "params": params,
+                "runner_code": runner_code,
+                "env": env,
+                "rerun_existing": rerun_existing,
             }
         )
+
+    rows = []
+    if workers == 1:
+        rows = [_run_superfit_subprocess(task) for task in tasks]
+    else:
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            future_to_index = {executor.submit(_run_superfit_subprocess, task): i for i, task in enumerate(tasks)}
+            completed_rows = [None] * len(tasks)
+            for future in as_completed(future_to_index):
+                completed_rows[future_to_index[future]] = future.result()
+            rows = [row for row in completed_rows if row is not None]
     return pd.DataFrame(rows)
 
 
@@ -1051,8 +1154,23 @@ def run_dash_batch(
     known_z: bool = False,
     output_path: Path | None = None,
     top_n: int = 5,
+    rlap_scores: bool | None = None,
+    acceleration_config: dict | str | Path | None = None,
 ) -> pd.DataFrame:
     """Run AstroDash on local 2-column spectra and update DASH_matches.txt."""
+    project_root = Path(project_root)
+    accel = load_acceleration_config(project_root, acceleration_config)
+    dash_config = accel.get("dash", {})
+    if dash_config.get("gpu", "auto") != "auto":
+        accel["runtime"]["gpu"] = dash_config["gpu"]
+    apply_runtime_environment(accel)
+    top_n = int(dash_config.get("top_n", top_n))
+    if rlap_scores is None:
+        rlap_scores = bool(dash_config.get("rlap_scores", True))
+    configured_known_z = dash_config.get("known_z", "auto")
+    if configured_known_z != "auto":
+        known_z = bool(configured_known_z)
+
     files = local_spectrum_text_files(project_root, targets)
     if not files:
         return pd.DataFrame([{"status": "no input spectra"}])
@@ -1079,7 +1197,7 @@ def run_dash_batch(
             redshifts=redshifts,
             knownZ=use_known_z,
             classifyHost=False,
-            rlapScores=True,
+            rlapScores=bool(rlap_scores),
         )
         classifier.list_best_matches(n=int(top_n), saveFilename=str(output_path))
         parsed = summarize_existing_dash_results(project_root)

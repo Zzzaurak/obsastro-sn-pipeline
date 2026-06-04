@@ -13,4 +13,4 @@
 
 这四个顶层 notebook 现在都直接手工维护，不再依赖生成脚本。
 
-主环境以 `../envs/environment_astro_env.yml` 为准；不要再使用旧的 `requirements.txt`。
+主环境以 `../envs/environment_astro_env.yml` 为准；不要再使用旧的 `requirements.txt`。Superfit、DASH 和 TARDIS YAML 的加速参数集中在 `../configs/acceleration.json`，notebook helper 会自动读取它。

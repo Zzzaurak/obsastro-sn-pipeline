@@ -1,84 +1,84 @@
-SN2026fvx_bfosc_20260319.txt   z=0.0134     ('Ia-norm', '-14 to -6', 0.9844)      Good rlap: 8.06     Reliable matches
- [['' 'Ia-norm' '-14 to -10' '0.79228926']
- ['' 'Ia-norm' '-10 to -6' '0.19206744']
- ['' 'Ic-broad' '-2 to 2' '0.008708643']
- ['' 'Ia-norm' '-6 to -2' '0.006817862']
- ['' 'Ic-broad' '-6 to -2' '0.00010907731']]
+SN2026fvx_bfosc_20260319.txt   z=0.0134     ('Ia-norm', '-14 to -6', 0.9844)      No rlap     Reliable matches
+ [['' 'Ia-norm' '-14 to -10' '0.7921351']
+ ['' 'Ia-norm' '-10 to -6' '0.19222431']
+ ['' 'Ic-broad' '-2 to 2' '0.008713129']
+ ['' 'Ia-norm' '-6 to -2' '0.0068106353']
+ ['' 'Ic-broad' '-6 to -2' '0.00010921573']]
 
-SN2026fvx_bfosc_20260326.txt   z=0.0072     ('Ia-norm', '-18 to 6', 1.0)      Good rlap: 9.71     Reliable matches
- [['' 'Ia-norm' '-10 to -6' '0.48732728']
- ['' 'Ia-norm' '-6 to -2' '0.44372967']
- ['' 'Ia-norm' '-2 to 2' '0.031209756']
- ['' 'Ia-91T' '-2 to 2' '0.028845098']
- ['' 'Ia-91T' '-6 to -2' '0.006956636']]
+SN2026fvx_bfosc_20260326.txt   z=0.0072     ('Ia-norm', '-18 to 6', 1.0)      No rlap     Reliable matches
+ [['' 'Ia-norm' '-10 to -6' '0.48733208']
+ ['' 'Ia-norm' '-6 to -2' '0.44377252']
+ ['' 'Ia-norm' '-2 to 2' '0.031180639']
+ ['' 'Ia-91T' '-2 to 2' '0.028831026']
+ ['' 'Ia-91T' '-6 to -2' '0.006956459']]
 
-SN2026fvx_bfosc_20260407.txt   z=0.0218     ('Ia-norm', '-14 to 10', 1.0)      Good rlap: 17.86     Reliable matches
- [['' 'Ia-norm' '-2 to 2' '0.53616524']
- ['' 'Ia-norm' '2 to 6' '0.22899455']
- ['' 'Ia-norm' '-6 to -2' '0.2193943']
- ['' 'Ia-norm' '-10 to -6' '0.015221476']
- ['' 'Ia-norm' '-14 to -10' '9.271917e-05']]
+SN2026fvx_bfosc_20260407.txt   z=0.0218     ('Ia-norm', '-14 to 10', 1.0)      No rlap     Reliable matches
+ [['' 'Ia-norm' '-2 to 2' '0.5362642']
+ ['' 'Ia-norm' '2 to 6' '0.22861889']
+ ['' 'Ia-norm' '-6 to -2' '0.2196542']
+ ['' 'Ia-norm' '-10 to -6' '0.015238606']
+ ['' 'Ia-norm' '-14 to -10' '9.2655486e-05']]
 
-SN2026fvx_bfosc_20260508.txt   z=0.0     ('Ia-norm', '18 to 46', 1.0)      Good rlap: 12.98     Reliable matches
- [['' 'Ia-norm' '30 to 34' '0.8335926']
- ['' 'Ia-norm' '26 to 30' '0.14970198']
- ['' 'Ia-norm' '38 to 42' '0.005266842']
- ['' 'Ia-norm' '34 to 38' '0.0051621553']
- ['' 'Ia-91T' '30 to 34' '0.0041358606']]
+SN2026fvx_bfosc_20260508.txt   z=0.0     ('Ia-norm', '18 to 46', 1.0)      No rlap     Reliable matches
+ [['' 'Ia-norm' '30 to 34' '0.833702']
+ ['' 'Ia-norm' '26 to 30' '0.1495929']
+ ['' 'Ia-norm' '38 to 42' '0.005269633']
+ ['' 'Ia-norm' '34 to 38' '0.0051636696']
+ ['' 'Ia-91T' '30 to 34' '0.004136435']]
 
-SN2026jlm_bfosc_20260426.txt   z=0.0355     ('Ia-norm', '-10 to 10', 1.0)      Good rlap: 10.22     Reliable matches
- [['' 'Ia-norm' '-2 to 2' '0.42236567']
- ['' 'Ia-norm' '2 to 6' '0.27001077']
- ['' 'Ia-norm' '-6 to -2' '0.16354038']
- ['' 'Ia-91T' '-2 to 2' '0.12450124']
- ['' 'Ia-norm' '-10 to -6' '0.010169101']]
+SN2026jlm_bfosc_20260426.txt   z=0.0355     ('Ia-norm', '-10 to 10', 1.0)      No rlap     Reliable matches
+ [['' 'Ia-norm' '-2 to 2' '0.42219853']
+ ['' 'Ia-norm' '2 to 6' '0.26994616']
+ ['' 'Ia-norm' '-6 to -2' '0.16349219']
+ ['' 'Ia-91T' '-2 to 2' '0.124790706']
+ ['' 'Ia-norm' '-10 to -6' '0.010155484']]
 
-SN2026jlm_bfosc_20260504.txt   z=0.0     ('Ia-norm', '-2 to 18', 1.0)      Good rlap: 12.58     Reliable matches
- [['' 'Ia-norm' '6 to 10' '0.94827217']
- ['' 'Ia-norm' '2 to 6' '0.045401655']
- ['' 'Ia-91T' '6 to 10' '0.0050472026']
- ['' 'Ia-norm' '10 to 14' '0.0012721423']
- ['' 'Ia-91T' '10 to 14' '6.8046834e-06']]
+SN2026jlm_bfosc_20260504.txt   z=0.0     ('Ia-norm', '-2 to 18', 1.0)      No rlap     Reliable matches
+ [['' 'Ia-norm' '6 to 10' '0.9482055']
+ ['' 'Ia-norm' '2 to 6' '0.04544776']
+ ['' 'Ia-91T' '6 to 10' '0.005062679']
+ ['' 'Ia-norm' '10 to 14' '0.0012771849']
+ ['' 'Ia-91T' '10 to 14' '6.8529166e-06']]
 
-SN2026jlm_bfosc_20260508.txt   z=0.1555     ('Ia-norm', '2 to 22', 1.0)      Good rlap: 16.47     Reliable matches
- [['' 'Ia-norm' '10 to 14' '0.9490087']
- ['' 'Ia-norm' '14 to 18' '0.027859977']
- ['' 'Ia-norm' '6 to 10' '0.018605176']
- ['' 'Ia-91T' '10 to 14' '0.0040398305']
- ['' 'Ia-91T' '14 to 18' '0.0003958232']]
+SN2026jlm_bfosc_20260508.txt   z=0.1555     ('Ia-norm', '2 to 22', 1.0)      No rlap     Reliable matches
+ [['' 'Ia-norm' '10 to 14' '0.9490084']
+ ['' 'Ia-norm' '14 to 18' '0.027902246']
+ ['' 'Ia-norm' '6 to 10' '0.018565182']
+ ['' 'Ia-91T' '10 to 14' '0.004037303']
+ ['' 'Ia-91T' '14 to 18' '0.00039676865']]
 
-SN2026kid_bfosc_20260426.txt   z=0.0031     ('Ic-broad', '-10 to 26', 1.0)      Low rlap: 1.01     Reliable matches
- [['' 'Ic-broad' '-6 to -2' '0.99959666']
- ['' 'Ic-broad' '-10 to -6' '0.00037527957']
- ['' 'Ic-broad' '2 to 6' '2.6823998e-05']
- ['' 'Ic-broad' '-2 to 2' '1.1465382e-06']
- ['' 'Ic-broad' '6 to 10' '1.0170206e-07']]
+SN2026kid_bfosc_20260426.txt   z=0.0031     ('Ic-broad', '-10 to 26', 1.0)      No rlap     Reliable matches
+ [['' 'Ic-broad' '-6 to -2' '0.9995944']
+ ['' 'Ic-broad' '-10 to -6' '0.00037753588']
+ ['' 'Ic-broad' '2 to 6' '2.6851578e-05']
+ ['' 'Ic-broad' '-2 to 2' '1.1450145e-06']
+ ['' 'Ic-broad' '6 to 10' '1.02241756e-07']]
 
-SN2026kid_bfosc_20260427.txt   z=0.0176     ('Ic-broad', '-10 to 10', 1.0)      Low rlap: 1.14     Reliable matches
- [['' 'Ic-broad' '-6 to -2' '0.99291766']
- ['' 'Ic-broad' '-2 to 2' '0.0034975323']
- ['' 'Ic-broad' '-10 to -6' '0.0030984764']
- ['' 'Ic-broad' '2 to 6' '0.00047159128']
- ['' 'Ic-broad' '6 to 10' '1.461562e-05']]
+SN2026kid_bfosc_20260427.txt   z=0.0176     ('Ic-broad', '-10 to 10', 1.0)      No rlap     Reliable matches
+ [['' 'Ic-broad' '-6 to -2' '0.9929032']
+ ['' 'Ic-broad' '-2 to 2' '0.0034945204']
+ ['' 'Ic-broad' '-10 to -6' '0.0031157597']
+ ['' 'Ic-broad' '2 to 6' '0.00047164556']
+ ['' 'Ic-broad' '6 to 10' '1.466802e-05']]
 
-SN2026kid_bfosc_20260508.txt   z=0.0     ('IIb', '-18 to -14', 0.9962)      Low rlap: 1.19     Unreliable matches
- [['' 'IIb' '-18 to -14' '0.9962334']
- ['' 'Ic-broad' '6 to 10' '0.0020042998']
- ['' 'Ic-broad' '-6 to -2' '0.00084619445']
- ['' 'Ic-broad' '-10 to -6' '0.00040667815']
- ['' 'IIb' '-20 to -18' '0.0003685893']]
+SN2026kid_bfosc_20260508.txt   z=0.0     ('IIb', '-18 to -14', 0.9963)      No rlap     Unreliable matches
+ [['' 'IIb' '-18 to -14' '0.9962618']
+ ['' 'Ic-broad' '6 to 10' '0.0019900794']
+ ['' 'Ic-broad' '-6 to -2' '0.00083879766']
+ ['' 'Ic-broad' '-10 to -6' '0.0004047752']
+ ['' 'IIb' '-20 to -18' '0.00036500517']]
 
-SN2026kie_bfosc_20260508.txt   z=0.0134     ('Ic-broad', '2 to 6', 0.7997)      Good rlap: 8.01     Unreliable matches
- [['' 'Ic-broad' '2 to 6' '0.7997292']
- ['' 'Ic-norm' '-6 to -2' '0.15187508']
- ['' 'Ic-norm' '-10 to -6' '0.021978978']
- ['' 'Ic-broad' '-2 to 2' '0.017484074']
- ['' 'Ic-norm' '-2 to 2' '0.006848677']]
+SN2026kie_bfosc_20260508.txt   z=0.0134     ('Ic-broad', '2 to 6', 0.7999)      No rlap     Unreliable matches
+ [['' 'Ic-broad' '2 to 6' '0.7998665']
+ ['' 'Ic-norm' '-6 to -2' '0.15175319']
+ ['' 'Ic-norm' '-10 to -6' '0.02201632']
+ ['' 'Ic-broad' '-2 to 2' '0.017448926']
+ ['' 'Ic-norm' '-2 to 2' '0.006833306']]
 
-SN2026lmp_bfosc_20260508.txt   z=0.0186     ('Ic-broad', '-10 to 46', 0.976)      Low rlap: 0.62     Reliable matches
- [['' 'Ic-broad' '6 to 10' '0.23237821']
- ['' 'Ic-broad' '-10 to -6' '0.22808799']
- ['' 'Ic-broad' '22 to 26' '0.15316083']
- ['' 'Ic-broad' '-6 to -2' '0.13076076']
- ['' 'Ic-broad' '18 to 22' '0.11961098']]
+SN2026lmp_bfosc_20260508.txt   z=0.0186     ('Ic-broad', '-10 to 46', 0.9761)      No rlap     Reliable matches
+ [['' 'Ic-broad' '6 to 10' '0.23219073']
+ ['' 'Ic-broad' '-10 to -6' '0.22807442']
+ ['' 'Ic-broad' '22 to 26' '0.15332271']
+ ['' 'Ic-broad' '-6 to -2' '0.13093741']
+ ['' 'Ic-broad' '18 to 22' '0.11965841']]
 
