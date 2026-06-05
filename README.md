@@ -150,7 +150,7 @@ sn-pipline/
 | Notebook | 用途 |
 |---|---|
 | `01_data_collection_and_observing.ipynb` | 目标获取、观测准备、TNS/Lasair/WISeREP 输出盘点。 |
-| `02_spectral_analysis_pipeline.ipynb` | 主光谱分析和手动调参入口：FITS 读取、手动红移复核（第 4 节会在局部连续谱归一化后叠加高斯拟合曲线）、自动选线、速度、pEW/FWHM、黑体温度、宿主线指标和质检标记；`SAVE_PRODUCTS/SAVE_FIGURES=True` 时默认写出带目标名前缀的产物。该 notebook 直接编辑维护，不再依赖生成脚本。 |
+| `02_spectral_analysis_pipeline.ipynb` | 主光谱分析和手动调参入口：FITS 读取、TNS 公共目录红移、自动选线、速度、pEW/FWHM、黑体温度、宿主线指标和质检标记；只在“单条谱线局部检查图”里保留本地吸收线微调，可用 `CHECK_LINE_KEY=None` + `CHECK_LINE_INDEX` 选择关键线。`SAVE_PRODUCTS/SAVE_FIGURES=True` 时默认写出带目标名前缀的产物。该 notebook 直接编辑维护，不再依赖生成脚本。 |
 | `03_tardis_modeling_optional.ipynb` | 可选 TARDIS 配置与模拟入口；从本地 FITS 和 02 的分析产物估计起始参数，不依赖 legacy notebook 或遗留数据。 |
 | `04_project_report.ipynb` | 中文报告 notebook，汇总科学问题、数据、分析、解释和结论。 |
 

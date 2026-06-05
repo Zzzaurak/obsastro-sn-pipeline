@@ -1,5 +1,5 @@
 {
-  "profile": "balanced",
+  "profile": "max",
   "runtime": {
     "gpu": "auto",
     "cuda_visible_devices": "0",

@@ -29,7 +29,7 @@ python scripts/build_presentation_figures.py
 - Final slides under `ppt/` must stay English.
 - README and top-level notebooks can use Chinese explanatory text.
 - Top-level notebooks are edited directly; treat `notebooks/02_spectral_analysis_pipeline.ipynb` as the canonical source for the spectral-analysis workflow and keep README/notebook README text in sync when you change it.
-- In `notebooks/02_spectral_analysis_pipeline.ipynb` section 4 ("手动测红移"), keep the redshift helper `print()` output concise. Preserve the simple version that prints only line/rest wave, `z_guess`, optional TNS reference, auto line z/lambda, and one `REDSHIFT_MEASUREMENTS` dict using `redshift_plot["auto_wave"]`. Do not expand it back to the verbose purple/manual-adopted two-record output unless the user explicitly asks.
+- In `notebooks/02_spectral_analysis_pipeline.ipynb`, keep the single-line local-check output concise. Show the candidate-line table, the selected `CHECK_LINE_INDEX` when `CHECK_LINE_KEY=None`, and the preview-only overrides (`CHECK_HALF_WIDTH`, `CHECK_SMOOTH_WINDOW`, `CHECK_EDGE_FRACTION`). Do not reintroduce a separate redshift-check section unless the user explicitly asks.
 
 ## Module Map
 
@@ -240,10 +240,10 @@ TARDIS simulation baseline for Type Ia SNe. YAML config with 7 sections (keys re
 
 ## TARDIS Simulation Flow
 
-The current top-level TARDIS entry point is `notebooks/03_tardis_modeling_optional.ipynb`. It should not depend on `notebooks/legacy/` or legacy data: it reads local `data/SN*/` FITS spectra and 02 analysis products such as `<RUN_TAG>_manual_redshift_summary.csv`, `<RUN_TAG>_target_status.csv`, and `<RUN_TAG>_line_diagnostics_qc.csv`. Older manual TARDIS work is preserved under `notebooks/legacy/` only for provenance. Run this only in the `tardis` kernel/environment and treat it as qualitative support rather than the primary science pipeline.
+The current top-level TARDIS entry point is `notebooks/03_tardis_modeling_optional.ipynb`. It should not depend on `notebooks/legacy/` or legacy data: it reads local `data/SN*/` FITS spectra and 02 analysis products such as `<RUN_TAG>_target_status.csv`, `<RUN_TAG>_spectra_summary.csv`, and `<RUN_TAG>_line_diagnostics_qc.csv`; if an old `<RUN_TAG>_manual_redshift_summary.csv` exists, treat it as a legacy fallback only. Older manual TARDIS work is preserved under `notebooks/legacy/` only for provenance. Run this only in the `tardis` kernel/environment and treat it as qualitative support rather than the primary science pipeline.
 
 1. **Load observed spectrum** — reads local one-dimensional FITS spectra from `data/SN*/`, not legacy `.dat` files.
-2. **Estimate target parameters from 02 products** — notebook uses manual redshift summary, target status, and QC line diagnostics when available; manual overrides remain available for redshift, type, velocity, epoch, apparent magnitude, and log luminosity.
+2. **Estimate target parameters from 02 products** — notebook uses the current 02 products (`target_status`, `spectra_summary`, `line_diagnostics_qc`) when available; if a legacy `manual_redshift_summary` still exists, treat it only as a fallback. Manual overrides remain available for redshift, type, velocity, epoch, apparent magnitude, and log luminosity.
    - `epoch_days` starts from manual override, otherwise median `phase_days` plus a type-dependent rise-time default.
    - `luminosity_requested` starts from manual log(Lsun), or apparent magnitude + Planck18 luminosity distance, or a conservative type default.
    - `velocity start/stop` starts from adopted/check line velocity; for Ia, the photospheric proxy uses ~0.7×line velocity.
@@ -313,7 +313,7 @@ Current top-level notebooks are curated deliverables. Older exploratory notebook
 | Notebook | Role |
 |----------|------|
 | `notebooks/01_data_collection_and_observing.ipynb` | Target metadata, observing preparation, and product inventory. Remote refresh is opt-in. |
-| `notebooks/02_spectral_analysis_pipeline.ipynb` | Main interactive spectral diagnostics notebook; reads local FITS, supports manual redshift checks, type-aware automatic line selection, target-tagged CSV/figure output, and local diagnostic plots. |
+| `notebooks/02_spectral_analysis_pipeline.ipynb` | Main interactive spectral diagnostics notebook; reads local FITS, adopts TNS redshift, supports type-aware automatic line selection, single-line local checks with `CHECK_LINE_INDEX`, target-tagged CSV/figure output, and local diagnostic plots. |
 | `notebooks/03_tardis_modeling_optional.ipynb` | Optional self-contained TARDIS setup/simulation notebook; uses local FITS and 02 products for starting parameters, no legacy dependency. |
 | `notebooks/04_project_report.ipynb` | Chinese P2Rp2-style report notebook with question, data, analysis, figures, interpretation, conclusions, and contribution placeholders. |
 

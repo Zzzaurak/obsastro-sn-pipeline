@@ -170,19 +170,6 @@ def rest_to_observed(wave_rest: np.ndarray | float, z: float) -> np.ndarray | fl
     return np.asarray(wave_rest) * (1.0 + z)
 
 
-def line_rest_wave(line_name: str, rest_wave: float | None = None) -> float:
-    """Return the rest wavelength for a host/SN line name or an explicit value."""
-    explicit = sp.parse_float(rest_wave)
-    if np.isfinite(explicit):
-        return float(explicit)
-    if line_name in sp.HOST_LINES:
-        return float(sp.HOST_LINES[line_name])
-    if line_name in sp.LINE_LIBRARY:
-        return float(sp.LINE_LIBRARY[line_name]["rest"])
-    known = sorted(set(sp.HOST_LINES) | set(sp.LINE_LIBRARY))
-    raise KeyError(f"Unknown line {line_name!r}. Known line keys: {', '.join(known)}")
-
-
 def target_redshift(spectra: Iterable[dict], target: str) -> float:
     z_values = [float(spec.get("z")) for spec in spectra if spec["target"] == target and np.isfinite(spec.get("z", np.nan))]
     return float(np.nanmedian(z_values)) if z_values else np.nan
@@ -279,25 +266,6 @@ def read_combined_analysis_products(analysis_dir: Path, filename: str, *, tag: s
         frames.append(new)
         seen_targets.update(str(value) for value in new["target"].dropna().unique())
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-
-
-def tns_redshift_reference(project_root: Path, target: str) -> dict[str, object]:
-    """Return the TNS public-catalog redshift reference used for the adopted analysis redshift."""
-    catalog_path = project_root / "data" / "tns_public_objects.csv"
-    key = target_key(target)
-    if not catalog_path.exists():
-        return {"target": key, "z_tns": np.nan, "type_tns": "", "source": str(catalog_path), "status": "catalog missing"}
-    metadata = sp.load_tns_metadata(catalog_path)
-    row = metadata.get(key, {})
-    z_tns = sp.parse_float(row.get("z"))
-    status = "ok" if np.isfinite(z_tns) else "target missing or redshift unavailable"
-    return {
-        "target": key,
-        "z_tns": z_tns,
-        "type_tns": row.get("type", ""),
-        "source": str(catalog_path),
-        "status": status,
-    }
 
 
 def _first_finite(table: pd.DataFrame, columns: Iterable[str]) -> tuple[float, str]:
@@ -718,18 +686,6 @@ def plot_observed_spectrum_with_tardis_overlay(
         output_path = Path(output_path)
         save_figure(fig, output_path.parent, output_path.name, enabled=True)
     return fig
-
-
-def apply_redshift_overrides(spectra: list[dict], redshift_by_target: dict[str, float]) -> list[dict]:
-    updated = []
-    for spec in spectra:
-        copy = dict(spec)
-        z = redshift_by_target.get(copy["target"])
-        if z is not None and np.isfinite(z):
-            copy["z"] = float(z)
-            copy["z_source"] = "manual"
-        updated.append(copy)
-    return updated
 
 
 def selected_line_plan(spectra: Iterable[dict], target_lines: dict[str, list[str]] | None = None) -> pd.DataFrame:
@@ -1587,234 +1543,6 @@ def measure_absorption_line_tuned(
     return result, profile
 
 
-def normalize_window_observed(
-    spec: dict,
-    rest_wave: float,
-    *,
-    z_guess: float,
-    half_width: float = 120.0,
-    smooth_window: int = 21,
-    edge_fraction: float = 0.18,
-) -> dict:
-    center_obs = rest_to_observed(rest_wave, z_guess)
-    wave_obs = np.asarray(spec["wave"], dtype=float)
-    mask = (wave_obs > center_obs - half_width) & (wave_obs < center_obs + half_width)
-    if mask.sum() < 12:
-        return {"status": "outside wavelength range"}
-    wave = wave_obs[mask]
-    raw_flux = np.asarray(spec["flux"][mask], dtype=float)
-    smooth = sp.smooth_flux(raw_flux, preferred_window=smooth_window)
-    continuum = sp.local_linear_continuum(wave, smooth, edge_fraction=edge_fraction)
-    valid = np.isfinite(wave) & np.isfinite(raw_flux) & np.isfinite(smooth) & np.isfinite(continuum) & (np.abs(continuum) > 0)
-    if valid.sum() < 12:
-        return {"status": "bad local continuum"}
-    return {
-        "status": "ok",
-        "wave_obs": wave[valid],
-        "wave_rest_guess": observed_to_rest(wave[valid], z_guess),
-        "raw_flux": raw_flux[valid],
-        "smooth": smooth[valid],
-        "continuum": continuum[valid],
-        "norm": smooth[valid] / continuum[valid],
-        "center_obs": center_obs,
-    }
-
-
-def auto_pick_line_wavelength(window: dict, *, mode: str = "emission") -> float:
-    if window.get("status") != "ok":
-        return np.nan
-    norm = np.asarray(window["norm"], dtype=float)
-    wave = np.asarray(window["wave_obs"], dtype=float)
-    if mode == "absorption":
-        return float(wave[np.nanargmin(norm)])
-    return float(wave[np.nanargmax(norm)])
-
-
-def fit_redshift_line_gaussian(
-    window: dict,
-    *,
-    mode: str,
-    center_guess: float,
-    half_width: float,
-) -> dict:
-    if window.get("status") != "ok":
-        status = window.get("status", "window unavailable")
-        return {
-            "gaussian_status": status,
-            "gaussian_wave": np.nan,
-            "gaussian_z": np.nan,
-            "gaussian_params": {},
-            "gaussian_model_norm": None,
-            "gaussian_fit_wave": None,
-            "gaussian_fit_norm": None,
-        }
-
-    wave = np.asarray(window["wave_obs"], dtype=float)
-    norm = np.asarray(window["norm"], dtype=float)
-    center0 = sp.parse_float(center_guess)
-    if not np.isfinite(center0):
-        center0 = float(window.get("center_obs", np.nanmedian(wave)))
-    local_half = float(min(40.0, max(float(half_width) / 2.0, 1.0)))
-    fit_mask = np.isfinite(wave) & np.isfinite(norm) & (wave >= center0 - local_half) & (wave <= center0 + local_half)
-    if fit_mask.sum() < 8:
-        return {
-            "gaussian_status": "fit failed: insufficient local points",
-            "gaussian_wave": np.nan,
-            "gaussian_z": np.nan,
-            "gaussian_params": {},
-            "gaussian_model_norm": None,
-            "gaussian_fit_wave": None,
-            "gaussian_fit_norm": None,
-        }
-
-    wave_fit = wave[fit_mask]
-    norm_fit = norm[fit_mask]
-    x_scale = max(local_half, 1.0)
-
-    baseline0 = float(np.nanmedian(norm_fit))
-    if not np.isfinite(baseline0):
-        baseline0 = 1.0
-    if mode == "absorption":
-        amp0 = float(np.nanmin(norm_fit) - baseline0)
-        if not np.isfinite(amp0) or amp0 >= 0:
-            amp0 = -0.1
-        amp_bounds = (-1.5, 0.0)
-    else:
-        amp0 = float(np.nanmax(norm_fit) - baseline0)
-        if not np.isfinite(amp0) or amp0 <= 0:
-            amp0 = 0.1
-        amp_bounds = (0.0, 1.5)
-    sigma0 = float(np.clip(np.nanstd(wave_fit) / 2.0, 5.0, 10.0))
-    slope0 = 0.0
-    center_delta = min(25.0, local_half)
-
-    def model(wave_vals, center, sigma, amp, baseline, slope):
-        x_scaled = (wave_vals - center0) / x_scale
-        return baseline + slope * x_scaled + amp * np.exp(-0.5 * ((wave_vals - center) / sigma) ** 2)
-
-    try:
-        params, _cov = curve_fit(
-            model,
-            wave_fit,
-            norm_fit,
-            p0=(center0, sigma0, amp0, baseline0, slope0),
-            bounds=(
-                (center0 - center_delta, 0.8, amp_bounds[0], 0.5, -0.5),
-                (center0 + center_delta, 50.0, amp_bounds[1], 1.5, 0.5),
-            ),
-            maxfev=20000,
-        )
-        fit_norm = model(wave, *params)
-        center = float(params[0])
-        result = {
-            "gaussian_status": "ok",
-            "gaussian_wave": center,
-            "gaussian_z": np.nan,
-            "gaussian_params": {
-                "center": center,
-                "sigma": float(params[1]),
-                "amp": float(params[2]),
-                "baseline": float(params[3]),
-                "slope": float(params[4]),
-            },
-            "gaussian_model_norm": fit_norm,
-            "gaussian_fit_wave": wave_fit,
-            "gaussian_fit_norm": model(wave_fit, *params),
-        }
-        return result
-    except Exception as exc:
-        return {
-            "gaussian_status": f"fit failed: {exc}",
-            "gaussian_wave": np.nan,
-            "gaussian_z": np.nan,
-            "gaussian_params": {},
-            "gaussian_model_norm": None,
-            "gaussian_fit_wave": None,
-            "gaussian_fit_norm": None,
-        }
-
-
-def redshift_from_observed(rest_wave: float, observed_wave: float) -> float:
-    return float(observed_wave) / float(rest_wave) - 1.0
-
-
-def redshift_guess_for_line(
-    spectra: Iterable[dict],
-    target: str,
-    line_name: str,
-    rest_wave: float,
-    *,
-    manual_observed_wave: float | None = None,
-    measurements: list[dict] | None = None,
-    default: float = 0.0,
-) -> float:
-    """Infer a plotting redshift guess from the local notebook context."""
-    manual = sp.parse_float(manual_observed_wave)
-    if np.isfinite(manual):
-        return redshift_from_observed(rest_wave, manual)
-
-    target_norm = target_key(target)
-    candidates = []
-    for item in measurements or []:
-        if target_key(item.get("target")) != target_norm:
-            continue
-        if item.get("line") and str(item.get("line")) != line_name:
-            continue
-        try:
-            item_rest = line_rest_wave(str(item.get("line") or line_name), item.get("rest_wave"))
-        except KeyError:
-            continue
-        observed = sp.parse_float(item.get("observed_wave"))
-        if np.isfinite(item_rest) and np.isfinite(observed):
-            candidates.append(redshift_from_observed(item_rest, observed))
-    if candidates:
-        return float(np.nanmedian(candidates))
-
-    existing = target_redshift(spectra, target_norm)
-    if np.isfinite(existing):
-        return float(existing)
-    return float(default)
-
-
-def redshift_table_from_measurements(measurements: list[dict]) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, float]]:
-    rows = []
-    for item in measurements:
-        target = target_key(item.get("target"))
-        try:
-            rest_wave = line_rest_wave(str(item.get("line", "")), item.get("rest_wave"))
-        except KeyError:
-            rest_wave = np.nan
-        observed_wave = sp.parse_float(item.get("observed_wave"))
-        if not target or not np.isfinite(rest_wave) or not np.isfinite(observed_wave):
-            continue
-        rows.append(
-            {
-                "target": target,
-                "file": item.get("file", ""),
-                "line": item.get("line", ""),
-                "kind": item.get("kind", "host/emission"),
-                "rest_wave": rest_wave,
-                "observed_wave": observed_wave,
-                "z": redshift_from_observed(rest_wave, observed_wave),
-                "note": item.get("note", ""),
-            }
-        )
-    table = pd.DataFrame(rows)
-    if table.empty:
-        return table, pd.DataFrame(), {}
-    summary_rows = []
-    overrides = {}
-    for target, group in table.groupby("target"):
-        z_values = pd.to_numeric(group["z"], errors="coerce").dropna()
-        if z_values.empty:
-            continue
-        z_med = float(np.nanmedian(z_values))
-        scatter = float(np.nanstd(z_values, ddof=1)) if len(z_values) > 1 else np.nan
-        summary_rows.append({"target": target, "z_manual": z_med, "z_scatter": scatter, "n_lines": len(z_values)})
-        overrides[target] = z_med
-    return table, pd.DataFrame(summary_rows), overrides
-
-
 def _format_value_with_uncertainty(
     value: object,
     error: object,
@@ -1907,6 +1635,102 @@ def spectrum_choice_table(spectra: list[dict], target: str | None = None) -> pd.
     return pd.DataFrame(rows)
 
 
+def line_check_options(
+    spectra: list[dict],
+    line_qc: pd.DataFrame,
+    target: str | None,
+    spectrum_index: int,
+    target_lines: dict[str, list[str]] | None = None,
+) -> pd.DataFrame:
+    items = spectra
+    if target is not None:
+        items = [spec for spec in spectra if spec["target"] == target_key(target)]
+    items = sorted(items, key=lambda spec: pd.Timestamp.max if pd.isna(spec["date_obs"]) else spec["date_obs"])
+    if not items:
+        return pd.DataFrame()
+
+    spec_index = int(np.clip(int(spectrum_index), 0, len(items) - 1))
+    spec = items[spec_index]
+    default_lines = line_keys_for(spec, target_lines)
+    default_order = {line: idx for idx, line in enumerate(default_lines)}
+    rows: list[dict[str, object]] = []
+    seen_lines: set[str] = set()
+
+    selected = pd.DataFrame()
+    if not line_qc.empty and {"target", "file", "status", "qc_flag"}.issubset(line_qc.columns):
+        mask = (
+            line_qc["target"].eq(spec["target"])
+            & line_qc["file"].eq(spec["file"])
+            & line_qc["status"].eq("ok")
+            & line_qc["qc_flag"].isin(["adopt", "check"])
+        )
+        selected = line_qc[mask].copy()
+
+    def _row_from_line(line_key: str, *, qc_row: pd.Series | None = None, priority: int = 2) -> dict[str, object]:
+        line_info = sp.LINE_LIBRARY.get(line_key, {})
+        row = {
+            "line": line_key,
+            "line_label": line_info.get("label", line_key),
+            "rest_wave": float(line_info.get("rest", np.nan)) if line_info else np.nan,
+            "qc_flag": "" if qc_row is None else str(qc_row.get("qc_flag", "")),
+            "status": "candidate" if qc_row is None else str(qc_row.get("status", "")),
+            "velocity_kms": np.nan if qc_row is None else sp.parse_float(qc_row.get("velocity_kms")),
+            "velocity_err_kms": np.nan if qc_row is None else sp.parse_float(qc_row.get("velocity_err_kms")),
+            "pEW_A": np.nan if qc_row is None else sp.parse_float(qc_row.get("pEW_A")),
+            "pEW_err_A": np.nan if qc_row is None else sp.parse_float(qc_row.get("pEW_err_A")),
+            "FWHM_A": np.nan if qc_row is None else sp.parse_float(qc_row.get("FWHM_A")),
+            "FWHM_err_A": np.nan if qc_row is None else sp.parse_float(qc_row.get("FWHM_err_A")),
+            "qc_note": "" if qc_row is None else str(qc_row.get("qc_note", "")),
+            "_priority": priority,
+            "_line_order": default_order.get(line_key, len(default_order)),
+            "_line_name": line_key,
+        }
+        return row
+
+    if not selected.empty:
+        for _, row in selected.iterrows():
+            line_key = str(row.get("line", "")).strip()
+            if not line_key or line_key in seen_lines:
+                continue
+            seen_lines.add(line_key)
+            priority = 0 if str(row.get("qc_flag")) == "adopt" else 1
+            rows.append(_row_from_line(line_key, qc_row=row, priority=priority))
+
+        for line_key in default_lines:
+            if line_key in seen_lines:
+                continue
+            seen_lines.add(line_key)
+            rows.append(_row_from_line(line_key, priority=2))
+    else:
+        for line_key in default_lines:
+            if line_key in seen_lines:
+                continue
+            seen_lines.add(line_key)
+            rows.append(_row_from_line(line_key, priority=2))
+
+    table = pd.DataFrame(rows)
+    if table.empty:
+        return table
+    table = table.sort_values(["_priority", "_line_order", "_line_name"]).reset_index(drop=True)
+    table["line_index"] = np.arange(len(table), dtype=int)
+    cols = [
+        "line_index",
+        "line",
+        "line_label",
+        "rest_wave",
+        "qc_flag",
+        "status",
+        "velocity_kms",
+        "velocity_err_kms",
+        "pEW_A",
+        "pEW_err_A",
+        "FWHM_A",
+        "FWHM_err_A",
+        "qc_note",
+    ]
+    return table[cols]
+
+
 def plot_raw_spectral_sequence(
     target: str,
     spectra: list[dict],
@@ -1954,70 +1778,6 @@ def plot_raw_spectral_sequence(
     ax.legend(fontsize=8)
     save_figure(fig, fig_dir, f"raw_spectral_sequence_{target}.png", enabled=save_figures)
     return fig
-
-
-def plot_redshift_zoom(
-    spec: dict,
-    line_name: str,
-    *,
-    rest_wave: float,
-    z_guess: float,
-    half_width: float,
-    manual_observed_wave: float | None = None,
-    mode: str = "emission",
-):
-    window = normalize_window_observed(spec, rest_wave, z_guess=z_guess, half_width=half_width)
-    if window.get("status") != "ok":
-        print(window.get("status"))
-        return {
-            **window,
-            "gaussian_status": window.get("status", "window unavailable"),
-            "gaussian_wave": np.nan,
-            "gaussian_z": np.nan,
-            "gaussian_params": {},
-            "gaussian_model_norm": None,
-            "gaussian_fit_wave": None,
-            "gaussian_fit_norm": None,
-        }, np.nan
-    auto_wave = auto_pick_line_wavelength(window, mode=mode)
-    gaussian_result = fit_redshift_line_gaussian(window, mode=mode, center_guess=auto_wave, half_width=half_width)
-    if gaussian_result.get("gaussian_status") == "ok" and np.isfinite(gaussian_result.get("gaussian_wave", np.nan)):
-        gaussian_result["gaussian_z"] = redshift_from_observed(rest_wave, gaussian_result["gaussian_wave"])
-    z_auto = redshift_from_observed(rest_wave, auto_wave)
-    adopted_wave = float(manual_observed_wave) if manual_observed_wave is not None and np.isfinite(manual_observed_wave) else auto_wave
-    z_adopted = redshift_from_observed(rest_wave, adopted_wave)
-
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.plot(window["wave_obs"], window["raw_flux"] / window["continuum"], color="0.7", lw=0.8, label="raw / local continuum")
-    ax.plot(window["wave_obs"], window["norm"], color="black", lw=1.1, label="smoothed / local continuum")
-    if gaussian_result.get("gaussian_status") == "ok" and gaussian_result.get("gaussian_model_norm") is not None:
-        gaussian_label = f"Gaussian fit center={gaussian_result['gaussian_wave']:.2f} A"
-        ax.plot(
-            window["wave_obs"],
-            np.asarray(gaussian_result["gaussian_model_norm"], dtype=float),
-            color="#1f77b4",
-            lw=1.3,
-            label=gaussian_label,
-        )
-    ax.axvline(window["center_obs"], color="red", ls="--", lw=1.0, label=f"{line_name} at z_guess")
-    ax.axvline(auto_wave, color="#1b9e77", ls=":", lw=1.5, label=f"green auto {mode} pick z={z_auto:.5f}")
-    ax.axvline(adopted_wave, color="#7b3294", ls="-.", lw=1.5, label=f"purple manual/check z={z_adopted:.5f}")
-    ax.set_xlabel("Observed wavelength (Angstrom)")
-    ax.set_ylabel("Local continuum-normalized flux")
-    ax.set_title(f"{spec['target']} {Path(spec['file']).name}: redshift check with {line_name}")
-    ax.grid(alpha=0.25)
-    ax.legend(fontsize=8)
-    add_rest_top_axis(ax, z_adopted)
-    return {
-        "window": window,
-        "auto_wave": auto_wave,
-        "auto_z": z_auto,
-        "adopted_wave": adopted_wave,
-        "adopted_z": z_adopted,
-        "z": z_adopted,
-        **gaussian_result,
-        "figure": fig,
-    }, z_auto
 
 
 def plot_spectral_sequence_dual_axis(
