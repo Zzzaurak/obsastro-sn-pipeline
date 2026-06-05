@@ -226,6 +226,43 @@ def _robust_scale(values: np.ndarray) -> float:
     return float(scale)
 
 
+def estimate_pew_uncertainty(
+    wave: np.ndarray,
+    norm: np.ndarray,
+    *,
+    noise_proxy: np.ndarray | None = None,
+    integration_mask: np.ndarray | None = None,
+) -> float:
+    """Estimate pEW uncertainty from local continuum-normalized noise."""
+    wave = np.asarray(wave, dtype=float)
+    norm = np.asarray(norm, dtype=float)
+    valid = np.isfinite(wave) & np.isfinite(norm)
+    if valid.sum() < 8:
+        return np.nan
+
+    if noise_proxy is not None:
+        proxy = np.asarray(noise_proxy, dtype=float)
+        sigma = _robust_scale(proxy[np.isfinite(proxy)])
+    else:
+        sigma = _robust_scale(np.diff(norm[valid], prepend=norm[valid][0]))
+    if not np.isfinite(sigma) or sigma <= 0:
+        return np.nan
+
+    if integration_mask is None:
+        active = norm < 1.0
+    else:
+        active = np.asarray(integration_mask, dtype=bool)
+    mask = valid & active
+    if mask.sum() < 2:
+        return np.nan
+
+    order = np.argsort(wave[mask])
+    wave_sel = wave[mask][order]
+    delta = np.gradient(wave_sel)
+    err = sigma * np.sqrt(np.nansum(delta**2))
+    return float(err) if np.isfinite(err) and err > 0 else np.nan
+
+
 def gaussian_absorption_model(
     x: np.ndarray | float,
     center: float,
@@ -438,6 +475,7 @@ def format_absorption_line_result(
     fit: dict[str, object],
     *,
     pEW_A: float,
+    pEW_err_A: float = np.nan,
     fit_chi2_red: float = np.nan,
 ) -> dict[str, object]:
     status = str(fit.get("status", "fit failed: unknown"))
@@ -478,6 +516,7 @@ def format_absorption_line_result(
         "velocity_kms": float(velocity) if np.isfinite(velocity) else np.nan,
         "velocity_err_kms": float(velocity_err) if np.isfinite(velocity_err) else np.nan,
         "pEW_A": float(pEW_A),
+        "pEW_err_A": float(pEW_err_A) if np.isfinite(pEW_err_A) else np.nan,
         "FWHM_A": float(fwhm) if np.isfinite(fwhm) else np.nan,
         "FWHM_err_A": float(fwhm_err) if np.isfinite(fwhm_err) else np.nan,
         "depth": float(depth) if np.isfinite(depth) else np.nan,
@@ -528,9 +567,10 @@ def measure_absorption_line(
 
     absorption = np.clip(1.0 - norm, 0.0, None)
     pew = float(np.trapz(absorption, wave))
+    pew_err = estimate_pew_uncertainty(wave, norm, noise_proxy=raw_norm - norm, integration_mask=absorption > 0)
     fit = fit_normalized_absorption_line(wave, norm, rest, half_width, blue_only=line.get("blue_only", True))
     chi2 = estimate_reduced_chi2(norm, fit.get("fit_norm"), noise_proxy=raw_norm - norm)
-    return format_absorption_line_result(line_key, line, fit, pEW_A=pew, fit_chi2_red=chi2)
+    return format_absorption_line_result(line_key, line, fit, pEW_A=pew, pEW_err_A=pew_err, fit_chi2_red=chi2)
 
 
 def planck_lambda_angstrom(wave_a: np.ndarray, temperature: float, amplitude: float) -> np.ndarray:
@@ -541,6 +581,78 @@ def planck_lambda_angstrom(wave_a: np.ndarray, temperature: float, amplitude: fl
     exponent = np.clip(h * c / (wave_m * k * temperature), 1e-6, 700)
     b_lambda = (2.0 * h * c**2) / (wave_m**5 * (np.exp(exponent) - 1.0))
     return amplitude * b_lambda
+
+
+def estimate_blackbody_temperature_error(
+    wave: np.ndarray,
+    y: np.ndarray,
+    params: np.ndarray,
+    *,
+    n_bootstrap: int = 80,
+    seed: int = 2026,
+) -> tuple[float, int]:
+    """Estimate color-temperature uncertainty with residual bootstrap."""
+    wave = np.asarray(wave, dtype=float)
+    y = np.asarray(y, dtype=float)
+    params = np.asarray(params, dtype=float)
+    model = planck_lambda_angstrom(wave, *params)
+    valid = np.isfinite(wave) & np.isfinite(y) & np.isfinite(model)
+    if valid.sum() < 30:
+        return np.nan, 0
+
+    wave = wave[valid]
+    y = y[valid]
+    model = model[valid]
+    residual = y - model
+    residual = residual[np.isfinite(residual)]
+    if residual.size < 10:
+        return np.nan, 0
+    residual = residual - np.nanmedian(residual)
+
+    rng = np.random.default_rng(seed)
+    values = []
+    for _ in range(max(int(n_bootstrap), 20)):
+        sample = model + rng.choice(residual, size=model.size, replace=True)
+        try:
+            boot_params, _ = curve_fit(
+                planck_lambda_angstrom,
+                wave,
+                sample,
+                p0=params,
+                bounds=([2500.0, 0.0], [25000.0, np.inf]),
+                maxfev=10000,
+            )
+        except Exception:
+            continue
+        temp = float(boot_params[0])
+        if np.isfinite(temp) and 2500.0 < temp < 25000.0:
+            values.append(temp)
+
+    if len(values) < 10:
+        return np.nan, len(values)
+    p16, p84 = np.nanpercentile(values, [16, 84])
+    err = 0.5 * (p84 - p16)
+    return (float(err) if np.isfinite(err) and err > 0 else np.nan), len(values)
+
+
+def _blackbody_result(
+    *,
+    temperature: float = np.nan,
+    error: float = np.nan,
+    status: str,
+    qc_flag: str = "",
+    qc_note: str = "",
+    n_bootstrap: int = 0,
+) -> dict[str, object]:
+    return {
+        "T_bb_K": float(temperature) if np.isfinite(temperature) else np.nan,
+        "T_err_K": float(error) if np.isfinite(error) else np.nan,
+        "T_qc_flag": qc_flag,
+        "T_qc_note": qc_note,
+        "T_err_method": "residual_bootstrap" if n_bootstrap else "",
+        "T_err_n_bootstrap": int(n_bootstrap),
+        "status": status,
+    }
 
 
 def fit_blackbody_temperature(
@@ -555,7 +667,7 @@ def fit_blackbody_temperature(
         & (wave_rest <= wave_range[1])
     )
     if mask.sum() < 30:
-        return {"T_bb_K": np.nan, "T_err_K": np.nan, "status": "insufficient wavelength range"}
+        return _blackbody_result(status="insufficient wavelength range")
 
     wave = np.asarray(wave_rest[mask], dtype=float)
     local_flux = smooth_flux(np.asarray(flux[mask], dtype=float), preferred_window=51)
@@ -563,14 +675,14 @@ def fit_blackbody_temperature(
         local_flux = -local_flux
     finite = np.isfinite(local_flux)
     if finite.sum() < 30:
-        return {"T_bb_K": np.nan, "T_err_K": np.nan, "status": "bad flux"}
+        return _blackbody_result(status="bad flux")
 
     wave = wave[finite]
     local_flux = local_flux[finite]
     local_flux = local_flux - np.nanpercentile(local_flux, 2)
     scale = np.nanmax(np.abs(local_flux))
     if not np.isfinite(scale) or scale <= 0:
-        return {"T_bb_K": np.nan, "T_err_K": np.nan, "status": "bad flux scale"}
+        return _blackbody_result(status="bad flux scale")
     y = local_flux / scale
     try:
         params, cov = curve_fit(
@@ -582,10 +694,26 @@ def fit_blackbody_temperature(
             maxfev=10000,
         )
         t_bb = float(params[0])
-        t_err = float(math.sqrt(cov[0, 0])) if np.isfinite(cov[0, 0]) else np.nan
-        return {"T_bb_K": t_bb, "T_err_K": t_err, "status": "ok"}
+        t_err, n_boot = estimate_blackbody_temperature_error(wave, y, params)
+        qc_flag = "adopt"
+        qc_note = "residual bootstrap uncertainty"
+        if t_bb <= 2501.0 or t_bb >= 24999.0:
+            qc_flag = "check"
+            qc_note = "temperature hit fit boundary"
+            t_err = np.nan
+        elif not np.isfinite(t_err) or t_err <= 0:
+            qc_flag = "check"
+            qc_note = "bootstrap uncertainty unavailable"
+        return _blackbody_result(
+            temperature=t_bb,
+            error=t_err,
+            status="ok",
+            qc_flag=qc_flag,
+            qc_note=qc_note,
+            n_bootstrap=n_boot,
+        )
     except Exception as exc:
-        return {"T_bb_K": np.nan, "T_err_K": np.nan, "status": f"fit failed: {exc}"}
+        return _blackbody_result(status=f"fit failed: {exc}")
 
 
 def load_spectra(project_root: Path, target_overrides: dict[str, dict[str, object]] | None = None) -> tuple[list[dict], pd.DataFrame]:
@@ -879,6 +1007,30 @@ def _savefig(path: Path) -> Path:
     return path
 
 
+def _clean_positive_yerr(values: object) -> pd.Series:
+    yerr = pd.to_numeric(values, errors="coerce")
+    return yerr.where(np.isfinite(yerr) & (yerr > 0))
+
+
+def _plot_with_optional_errorbar(ax, x, y, *, yerr=None, marker="o", lw=1.2, alpha=1.0, label=""):
+    line, = ax.plot(x, y, marker=marker, lw=lw, alpha=alpha, label=label)
+    if yerr is not None:
+        clean = _clean_positive_yerr(yerr)
+        finite = pd.to_numeric(y, errors="coerce").notna() & clean.notna()
+        if finite.any():
+            ax.errorbar(
+                x[finite],
+                pd.to_numeric(y, errors="coerce")[finite],
+                yerr=clean[finite],
+                fmt="none",
+                ecolor=line.get_color(),
+                elinewidth=1.0,
+                capsize=2,
+                alpha=alpha,
+            )
+    return line
+
+
 def plot_spectral_sequences(spectra: Iterable[dict], fig_dir: Path) -> list[Path]:
     paths = []
     spectra_list = list(spectra)
@@ -926,7 +1078,15 @@ def plot_velocity_panel(line_qc: pd.DataFrame, fig_dir: Path) -> Path | None:
             marker = "o" if (group["qc_flag"].eq("adopt")).any() else "s"
             alpha = 1.0 if (group["qc_flag"].eq("adopt")).any() else 0.45
             x = group["phase_days"] if group["phase_days"].notna().any() else pd.to_datetime(group["date_obs"])
-            ax.plot(x, group["velocity_kms"], marker=marker, lw=1.2, alpha=alpha, label=line)
+            _plot_with_optional_errorbar(
+                ax,
+                x,
+                pd.to_numeric(group["velocity_kms"], errors="coerce"),
+                yerr=group.get("velocity_err_kms"),
+                marker=marker,
+                alpha=alpha,
+                label=line,
+            )
         ax.set_title(target)
         ax.set_ylabel("Velocity (km/s)")
         ax.grid(alpha=0.25)
@@ -947,7 +1107,15 @@ def plot_pew_panel(line_qc: pd.DataFrame, fig_dir: Path) -> Path | None:
         group = group.sort_values("phase_days")
         x = group["phase_days"] if group["phase_days"].notna().any() else pd.to_datetime(group["date_obs"])
         alpha = 1.0 if (group["qc_flag"].eq("adopt")).any() else 0.45
-        plt.plot(x, group["pEW_A"], marker="o", lw=1.2, alpha=alpha, label=f"{target} {line}")
+        _plot_with_optional_errorbar(
+            plt.gca(),
+            x,
+            pd.to_numeric(group["pEW_A"], errors="coerce"),
+            yerr=group.get("pEW_err_A"),
+            marker="o",
+            alpha=alpha,
+            label=f"{target} {line}",
+        )
     plt.title("Pseudo-equivalent width checks")
     plt.xlabel("Days since discovery")
     plt.ylabel("pEW (Angstrom)")
@@ -963,7 +1131,14 @@ def plot_blackbody(bb_df: pd.DataFrame, fig_dir: Path) -> Path | None:
     plt.figure(figsize=(9, 5))
     for target, group in ok.groupby("target"):
         x = group["phase_days"] if group["phase_days"].notna().any() else pd.to_datetime(group["date_obs"])
-        plt.errorbar(x, group["T_bb_K"], yerr=group["T_err_K"], marker="o", capsize=2, lw=1.2, label=target)
+        _plot_with_optional_errorbar(
+            plt.gca(),
+            x,
+            pd.to_numeric(group["T_bb_K"], errors="coerce"),
+            yerr=group.get("T_err_K"),
+            marker="o",
+            label=target,
+        )
     plt.title("Continuum color-temperature estimate")
     plt.xlabel("Days since discovery")
     plt.ylabel("Blackbody temperature (K)")

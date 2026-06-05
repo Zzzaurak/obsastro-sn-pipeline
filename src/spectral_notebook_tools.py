@@ -44,9 +44,31 @@ RAW_SEQUENCE_REFERENCE_LINES = [
 ]
 
 
-def load_observed_spectra(project_root: Path, target_metadata: dict[str, dict[str, object]] | None = None) -> tuple[list[dict], pd.DataFrame]:
-    """Load local 1-D FITS spectra without reading TNS/output metadata."""
-    target_metadata = target_metadata or {}
+def _metadata_value_is_present(value: object) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, (float, np.floating)):
+        return np.isfinite(value)
+    if isinstance(value, (int, np.integer)):
+        return True
+    text = str(value).strip().lower()
+    return text not in {"", "nan", "none", "null"}
+
+
+def load_observed_spectra(
+    project_root: Path,
+    target_metadata: dict[str, dict[str, object]] | None = None,
+    *,
+    use_tns_catalog: bool = True,
+) -> tuple[list[dict], pd.DataFrame]:
+    """Load local 1-D FITS spectra and merge TNS public-catalog metadata when available."""
+    project_root = Path(project_root)
+    target_metadata = {target_key(key): dict(value) for key, value in (target_metadata or {}).items()}
+    catalog_metadata: dict[str, dict[str, object]] = {}
+    catalog_path = project_root / "data" / "tns_public_objects.csv"
+    if use_tns_catalog and catalog_path.exists():
+        catalog_metadata = sp.load_tns_metadata(catalog_path)
+
     data_dir = project_root / "data"
     fits_paths = sorted(
         p
@@ -71,7 +93,26 @@ def load_observed_spectra(project_root: Path, target_metadata: dict[str, dict[st
                     skipped.append({"file": str(path.relative_to(project_root)), "reason": "no wavelength WCS"})
                     continue
                 target = target_key(hdu.header.get("OBJECT") or path.parent.name or path.stem.split("_")[0])
-                meta = dict(target_metadata.get(target, {}))
+                tns_meta = dict(catalog_metadata.get(target, {}))
+                manual_meta = dict(target_metadata.get(target, {}))
+                meta = dict(tns_meta)
+                for key, value in manual_meta.items():
+                    if key == "z" or not _metadata_value_is_present(value):
+                        continue
+                    meta[key] = value
+
+                z_tns = sp.parse_float(tns_meta.get("z"))
+                z_manual = sp.parse_float(manual_meta.get("z"))
+                if np.isfinite(z_tns):
+                    z = float(z_tns)
+                    z_source = "tns_public_catalog"
+                elif np.isfinite(z_manual):
+                    z = float(z_manual)
+                    z_source = "manual_config_fallback"
+                else:
+                    z = np.nan
+                    z_source = "unset"
+
                 date_obs = sp.parse_datetime(hdu.header.get("DATE-OBS", ""))
                 discovery = sp.parse_datetime(meta.get("discoverydate", ""))
                 phase_days = np.nan
@@ -86,8 +127,8 @@ def load_observed_spectra(project_root: Path, target_metadata: dict[str, dict[st
                         "flux": flux,
                         "date_obs": date_obs,
                         "phase_days": phase_days,
-                        "z": sp.parse_float(meta.get("z")),
-                        "z_source": "manual_config" if np.isfinite(sp.parse_float(meta.get("z"))) else "unset",
+                        "z": z,
+                        "z_source": z_source,
                         "type": meta.get("type", ""),
                         "discoverydate": meta.get("discoverydate", ""),
                         "host": meta.get("host", ""),
@@ -241,7 +282,7 @@ def read_combined_analysis_products(analysis_dir: Path, filename: str, *, tag: s
 
 
 def tns_redshift_reference(project_root: Path, target: str) -> dict[str, object]:
-    """Return a TNS public-catalog redshift reference without using it in local measurements."""
+    """Return the TNS public-catalog redshift reference used for the adopted analysis redshift."""
     catalog_path = project_root / "data" / "tns_public_objects.csv"
     key = target_key(target)
     if not catalog_path.exists():
@@ -358,13 +399,17 @@ def estimate_tardis_context(
 
     target_status = read_combined_analysis_products(analysis_dir, "target_status.csv", tag=analysis_tag)
     spectra_summary = read_combined_analysis_products(analysis_dir, "spectra_summary.csv", tag=analysis_tag)
-    redshift_summary = read_combined_analysis_products(analysis_dir, "manual_redshift_summary.csv", tag=analysis_tag)
     line_qc = read_combined_analysis_products(analysis_dir, "line_diagnostics_qc.csv", tag=analysis_tag)
     bb_table = read_combined_analysis_products(analysis_dir, "blackbody_temperature.csv", tag=analysis_tag)
+    legacy_redshift_summary = read_combined_analysis_products(analysis_dir, "manual_redshift_summary.csv", tag=analysis_tag)
 
     target_status = target_status[target_status["target"].eq(key)] if "target" in target_status.columns else pd.DataFrame()
     spectra_summary = spectra_summary[spectra_summary["target"].eq(key)] if "target" in spectra_summary.columns else pd.DataFrame()
-    redshift_summary = redshift_summary[redshift_summary["target"].eq(key)] if "target" in redshift_summary.columns else pd.DataFrame()
+    legacy_redshift_summary = (
+        legacy_redshift_summary[legacy_redshift_summary["target"].eq(key)]
+        if "target" in legacy_redshift_summary.columns
+        else pd.DataFrame()
+    )
     line_qc = line_qc[line_qc["target"].eq(key)] if "target" in line_qc.columns else pd.DataFrame()
     bb_table = bb_table[bb_table["target"].eq(key)] if "target" in bb_table.columns else pd.DataFrame()
 
@@ -372,14 +417,14 @@ def estimate_tardis_context(
     if np.isfinite(z_manual):
         z, z_source = z_manual, "manual override"
     else:
-        z, z_col = _first_finite(redshift_summary, ["z_manual", "z"])
-        z_source = f"manual_redshift_summary.{z_col}" if z_col else ""
-        if not np.isfinite(z):
-            z, z_col = _first_finite(target_status, ["z"])
-            z_source = f"target_status.{z_col}" if z_col else ""
+        z, z_col = _first_finite(target_status, ["z"])
+        z_source = f"target_status.{z_col}" if z_col else ""
         if not np.isfinite(z):
             z, z_col = _first_finite(spectra_summary, ["z"])
-            z_source = f"spectra_summary.{z_col}" if z_col else "unset"
+            z_source = f"spectra_summary.{z_col}" if z_col else ""
+        if not np.isfinite(z):
+            z, z_col = _first_finite(legacy_redshift_summary, ["z_manual", "z"])
+            z_source = f"legacy_manual_redshift_summary.{z_col}" if z_col else "unset"
 
     sn_type = str(manual_type).strip()
     type_source = "manual override" if sn_type else ""
@@ -461,7 +506,7 @@ def estimate_tardis_context(
         "analysis_tables": {
             "target_status": target_status,
             "spectra_summary": spectra_summary,
-            "manual_redshift_summary": redshift_summary,
+            "legacy_manual_redshift_summary": legacy_redshift_summary,
             "line_diagnostics_qc": line_qc,
             "blackbody_temperature": bb_table,
         },
@@ -1485,12 +1530,14 @@ def measure_absorption_line_tuned(
     wave_rest = rest_frame_wave(spec)
     mask = (wave_rest > rest - half_width) & (wave_rest < rest + half_width)
     if mask.sum() < 12:
-        return sp.format_absorption_line_result(
+        result = sp.format_absorption_line_result(
             line_key,
             line,
             {"status": "outside wavelength range", "fit_method": "gaussian_absorption"},
             pEW_A=np.nan,
-        ), {}
+        )
+        result["pEW_err_A"] = np.nan
+        return result, {}
 
     wave = np.asarray(wave_rest[mask], dtype=float)
     raw_flux = np.asarray(spec["flux"][mask], dtype=float)
@@ -1498,24 +1545,34 @@ def measure_absorption_line_tuned(
     continuum = sp.local_linear_continuum(wave, smooth, edge_fraction=edge_fraction)
     valid = np.isfinite(wave) & np.isfinite(raw_flux) & np.isfinite(smooth) & np.isfinite(continuum) & (np.abs(continuum) > 0)
     if valid.sum() < 12:
-        return sp.format_absorption_line_result(
+        result = sp.format_absorption_line_result(
             line_key,
             line,
             {"status": "bad local continuum", "fit_method": "gaussian_absorption"},
             pEW_A=np.nan,
-        ), {}
+        )
+        result["pEW_err_A"] = np.nan
+        return result, {}
 
     wave = wave[valid]
     raw_flux = raw_flux[valid]
     smooth = smooth[valid]
     continuum = continuum[valid]
     norm = smooth / continuum
+    raw_norm = raw_flux / continuum
 
     absorption = np.clip(1.0 - norm, 0.0, None)
     pew = float(np.trapz(absorption, wave))
+    pew_err = sp.estimate_pew_uncertainty(
+        wave,
+        norm,
+        noise_proxy=raw_norm - norm,
+        integration_mask=absorption > 0,
+    )
     fit = sp.fit_normalized_absorption_line(wave, norm, rest, half_width, blue_only=line.get("blue_only", True))
-    chi2 = sp.estimate_reduced_chi2(norm, fit.get("fit_norm"), noise_proxy=raw_flux / continuum - norm)
+    chi2 = sp.estimate_reduced_chi2(norm, fit.get("fit_norm"), noise_proxy=raw_norm - norm)
     result = sp.format_absorption_line_result(line_key, line, fit, pEW_A=pew, fit_chi2_red=chi2)
+    result["pEW_err_A"] = pew_err
     profile = {
         "wave": wave,
         "raw_flux": raw_flux,
@@ -1758,6 +1815,28 @@ def redshift_table_from_measurements(measurements: list[dict]) -> tuple[pd.DataF
     return table, pd.DataFrame(summary_rows), overrides
 
 
+def _format_value_with_uncertainty(
+    value: object,
+    error: object,
+    *,
+    value_fmt: str = ".1f",
+    error_fmt: str = ".1f",
+    unit: str = "",
+) -> str:
+    value_num = sp.parse_float(value)
+    if not np.isfinite(value_num):
+        return "n/a"
+    error_num = sp.parse_float(error)
+    if np.isfinite(error_num):
+        return f"{value_num:{value_fmt}}+/-{error_num:{error_fmt}}{unit}"
+    return f"{value_num:{value_fmt}}{unit}"
+
+
+def _clean_positive_yerr(values: object) -> pd.Series:
+    yerr = pd.to_numeric(values, errors="coerce")
+    return yerr.where(np.isfinite(yerr) & (yerr > 0))
+
+
 def add_rest_top_axis(ax, z: float):
     if not np.isfinite(z):
         return None
@@ -1922,7 +2001,7 @@ def plot_redshift_zoom(
         )
     ax.axvline(window["center_obs"], color="red", ls="--", lw=1.0, label=f"{line_name} at z_guess")
     ax.axvline(auto_wave, color="#1b9e77", ls=":", lw=1.5, label=f"green auto {mode} pick z={z_auto:.5f}")
-    ax.axvline(adopted_wave, color="#7b3294", ls="-.", lw=1.5, label=f"purple manual/adopted z={z_adopted:.5f}")
+    ax.axvline(adopted_wave, color="#7b3294", ls="-.", lw=1.5, label=f"purple manual/check z={z_adopted:.5f}")
     ax.set_xlabel("Observed wavelength (Angstrom)")
     ax.set_ylabel("Local continuum-normalized flux")
     ax.set_title(f"{spec['target']} {Path(spec['file']).name}: redshift check with {line_name}")
@@ -2039,6 +2118,14 @@ def plot_quantity_by_target(table: pd.DataFrame, value_col: str, ylabel: str, ti
         print(f"{value_col}: no adopt/check data")
         return None
     selected[value_col] = pd.to_numeric(selected[value_col], errors="coerce")
+    error_col = {
+        "velocity_kms": "velocity_err_kms",
+        "FWHM_A": "FWHM_err_A",
+        "depth": "fit_depth_err",
+        "pEW_A": "pEW_err_A",
+    }.get(value_col, "")
+    if error_col and error_col in selected.columns:
+        selected[error_col] = pd.to_numeric(selected[error_col], errors="coerce")
     selected = selected[selected[value_col].notna()]
     if selected.empty:
         print(f"{value_col}: no finite values")
@@ -2053,7 +2140,21 @@ def plot_quantity_by_target(table: pd.DataFrame, value_col: str, ylabel: str, ti
             x = group["phase_days"] if group["phase_days"].notna().any() else pd.to_datetime(group["date_obs"])
             marker = "o" if group["qc_flag"].eq("adopt").any() else "s"
             alpha = 1.0 if group["qc_flag"].eq("adopt").any() else 0.5
-            ax.plot(x, group[value_col], marker=marker, lw=1.2, alpha=alpha, label=line_key)
+            line, = ax.plot(x, group[value_col], marker=marker, lw=1.2, alpha=alpha, label=line_key)
+            if error_col and error_col in group.columns:
+                yerr = _clean_positive_yerr(group[error_col])
+                finite = group[value_col].notna() & yerr.notna()
+                if finite.any():
+                    ax.errorbar(
+                        x[finite],
+                        group[value_col][finite],
+                        yerr=yerr[finite],
+                        fmt="none",
+                        ecolor=line.get_color(),
+                        elinewidth=1.0,
+                        capsize=2,
+                        alpha=alpha,
+                    )
         ax.set_title(target)
         ax.set_ylabel(ylabel)
         ax.grid(alpha=0.25)
@@ -2157,10 +2258,37 @@ def plot_line_diagnostics_grid(
         ax_norm.grid(alpha=0.2)
         chi2 = result.get("fit_chi2_red", np.nan)
         chi2_text = f"\nchi2r={chi2:.2f}" if np.isfinite(chi2) else ""
+        velocity_text = _format_value_with_uncertainty(
+            result.get("velocity_kms"),
+            result.get("velocity_err_kms"),
+            value_fmt=".0f",
+            error_fmt=".0f",
+            unit=" km/s",
+        )
+        pew_text = _format_value_with_uncertainty(
+            result.get("pEW_A"),
+            result.get("pEW_err_A"),
+            value_fmt=".1f",
+            error_fmt=".1f",
+            unit=" A",
+        )
+        fwhm_text = _format_value_with_uncertainty(
+            result.get("FWHM_A"),
+            result.get("FWHM_err_A"),
+            value_fmt=".1f",
+            error_fmt=".1f",
+            unit=" A",
+        )
+        depth_text = _format_value_with_uncertainty(
+            result.get("depth"),
+            result.get("fit_depth_err"),
+            value_fmt=".2f",
+            error_fmt=".2f",
+        )
         ax_norm.text(
             0.02,
             0.05,
-            f"v={result['velocity_kms']:.0f} km/s\npEW={result['pEW_A']:.1f} A, FWHM={result['FWHM_A']:.1f} A{chi2_text}",
+            f"v={velocity_text}\npEW={pew_text}, FWHM={fwhm_text}\ndepth={depth_text}{chi2_text}",
             transform=ax_norm.transAxes,
             fontsize=8,
             bbox={"facecolor": "white", "alpha": 0.75, "edgecolor": "0.85"},
@@ -2260,10 +2388,10 @@ def plot_line_check(
     axes[1].legend(fontsize=8)
 
     text = (
-        f"v={result['velocity_kms']:.0f} km/s, "
-        f"pEW={result['pEW_A']:.1f} A, "
-        f"FWHM={result['FWHM_A']:.1f} A, "
-        f"depth={result['depth']:.2f}, "
+        f"v={_format_value_with_uncertainty(result.get('velocity_kms'), result.get('velocity_err_kms'), value_fmt='.0f', error_fmt='.0f', unit=' km/s')}, "
+        f"pEW={_format_value_with_uncertainty(result.get('pEW_A'), result.get('pEW_err_A'), value_fmt='.1f', error_fmt='.1f', unit=' A')}, "
+        f"FWHM={_format_value_with_uncertainty(result.get('FWHM_A'), result.get('FWHM_err_A'), value_fmt='.1f', error_fmt='.1f', unit=' A')}, "
+        f"depth={_format_value_with_uncertainty(result.get('depth'), result.get('fit_depth_err'), value_fmt='.2f', error_fmt='.2f')}, "
         f"chi2r={result.get('fit_chi2_red', np.nan):.2f}"
     )
     axes[1].text(
@@ -2303,13 +2431,19 @@ def blackbody_profile(wave_rest: np.ndarray, flux: np.ndarray, wave_range: tuple
             bounds=([2500.0, 0.0], [25000.0, np.inf]),
             maxfev=10000,
         )
+        t_err, n_boot = sp.estimate_blackbody_temperature_error(wave, y, params)
+        t_bb = float(params[0])
+        if t_bb <= 2501.0 or t_bb >= 24999.0:
+            t_err = np.nan
         return {
             "status": "ok",
             "wave": wave,
             "flux_norm": y,
             "model": sp.planck_lambda_angstrom(wave, *params),
-            "T_bb_K": float(params[0]),
-            "T_err_K": float(np.sqrt(cov[0, 0])) if np.isfinite(cov[0, 0]) else np.nan,
+            "T_bb_K": t_bb,
+            "T_err_K": t_err,
+            "T_err_method": "residual_bootstrap" if n_boot else "",
+            "T_err_n_bootstrap": n_boot,
         }
     except Exception as exc:
         return {"status": f"fit failed: {exc}"}
@@ -2340,7 +2474,14 @@ def plot_blackbody_fit_grid(
             continue
         ax.plot(prof["wave"], prof["flux_norm"], color="black", lw=0.9, label="continuum proxy")
         ax.plot(prof["wave"], prof["model"], color="#d95f02", lw=1.2, label="blackbody fit")
-        ax.set_title(f"{spec['target']}: T={prof['T_bb_K']:.0f} K\n{Path(spec['file']).name}", fontsize=8, pad=3)
+        temp_text = _format_value_with_uncertainty(
+            prof.get("T_bb_K"),
+            prof.get("T_err_K"),
+            value_fmt=".0f",
+            error_fmt=".0f",
+            unit=" K",
+        )
+        ax.set_title(f"{spec['target']}: T={temp_text}\n{Path(spec['file']).name}", fontsize=8, pad=3)
         if panel_row == nrows - 1:
             ax.set_xlabel("Rest wavelength (Angstrom)")
         else:

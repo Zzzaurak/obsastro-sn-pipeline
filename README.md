@@ -202,7 +202,7 @@ python scripts/download_tardis_atom_data.py
 
 该脚本不依赖当前工作目录，会把 `~/.astropy/config/tardis_internal_config.yml` 中的 `data_dir` 写成当前 clone 的项目 `data/` 绝对路径，并在同一目录下载或复用 `kurucz_cd23_chianti_H_He_latest.h5`。如果只需要修复路径、不想联网下载，可运行 `python scripts/download_tardis_atom_data.py --configure-only`。
 
-然后使用 `notebooks/03_tardis_modeling_optional.ipynb`。该 notebook 会从本地 FITS 和 02 的 `*_manual_redshift_summary.csv`、`*_target_status.csv`、`*_line_diagnostics_qc.csv` 等产物估计第一版 `z/type/velocity/time_explosion/luminosity`，生成 `configs/tardis/<target>.yml`，并在 `RUN_TARDIS=True` 时运行模拟。旧版归档 notebook 只作追溯，不是复现依赖。当前安装的是 TARDIS v2 dev，API 与网上很多 v1 示例不同；关键差异见 `AGENTS.md`。
+然后使用 `notebooks/03_tardis_modeling_optional.ipynb`。该 notebook 会从本地 FITS 和 02 的 `*_target_status.csv`、`*_spectra_summary.csv`、`*_line_diagnostics_qc.csv` 等产物估计第一版 `z/type/velocity/time_explosion/luminosity`；红移默认来自 TNS public catalog，并随 02 的 summary/status 产物传递。它会生成 `configs/tardis/<target>.yml`，并在 `RUN_TARDIS=True` 时运行模拟。旧版归档 notebook 只作追溯，不是复现依赖。当前安装的是 TARDIS v2 dev，API 与网上很多 v1 示例不同；关键差异见 `AGENTS.md`。
 
 `configs/acceleration.json` 中的 `tardis` 段会自动叠加到新生成的 `configs/tardis/<target>.yml`，例如 `montecarlo.nthreads`、`no_of_packets`、`iterations`、`last_no_of_packets`、`no_of_virtual_packets`、`spectrum.num` 和 integrated spectrum 的 `compute/points`。这一步只改 YAML，不会安装或修改 `tardis` conda 环境。
 
