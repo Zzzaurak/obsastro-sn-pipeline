@@ -1,14 +1,14 @@
 tardis_config_version: v1.0
 supernova:
   luminosity_requested: 9.40 log_lsun
-  time_explosion: 18.0 day
+  time_explosion: 25.7 day
 atom_data: /home/zzzaurak/THU/astro/obsastro-sn-pipeline/data/kurucz_cd23_chianti_H_He_latest.h5
 model:
   structure:
     type: specific
     velocity:
-      start: 4266.2 km/s
-      stop: 13204.9 km/s
+      start: 4373.9 km/s
+      stop: 13538.3 km/s
       num: 20
     density:
       type: branch85_w7
@@ -31,18 +31,18 @@ montecarlo:
   iterations: 10
   last_no_of_packets: 100000
   no_of_virtual_packets: 3
+  nthreads: 8
   convergence_strategy:
     type: damped
     damping_constant: 0.5
     threshold: 0.05
     lock_t_inner_cycles: 1
     t_inner_update_exponent: -0.5
-  nthreads: 8
 spectrum:
   start: 500 angstrom
   stop: 20000 angstrom
   num: 10000
-  method: real
+  method: integrated
   integrated:
     compute: Automatic
     points: 1000
