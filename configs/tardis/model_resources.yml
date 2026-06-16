@@ -1,0 +1,67 @@
+# TARDIS density/abundance model resources for later tuning.
+#
+# These entries point to files bundled with the installed TARDIS package.
+# Run only when you want to prepare the local copies:
+#
+#   conda activate tardis
+#   python scripts/download_tardis_model_resources.py
+#
+# Outputs are written under data/tardis_models/ and are intentionally not used
+# by the current adopted configs until a later tuning pass opts into them.
+
+resources:
+  - id: ia_ddt_n100_comp
+    family: Ia
+    description: TARDIS-bundled delayed-detonation N100 composition CSVY example.
+    source:
+      type: package_file
+      path: workflows/high_energy/tests/data/gamma_ray_code_ddt_n100_comp.csvy
+    target: ia/ddt_n100_comp.csvy
+
+  - id: ia_doubledet_2020_1a_comp
+    family: Ia
+    description: TARDIS-bundled double-detonation 2020 Type Ia composition CSVY example.
+    source:
+      type: package_file
+      path: workflows/high_energy/tests/data/gamma_ray_code_ddet_2020_1a_comp.csvy
+    target: ia/doubledet_2020_1a_comp.csvy
+
+  - id: ia_deflagration_n5_2014
+    family: Ia
+    description: TARDIS-bundled N5 deflagration composition CSVY example.
+    source:
+      type: package_file
+      path: workflows/high_energy/tests/data/gamma_ray_code_def_n5_2014.csvy
+    target: ia/deflagration_n5_2014.csvy
+
+  - id: ia_merger_2012_comp
+    family: Ia
+    description: TARDIS-bundled merger composition CSVY example.
+    source:
+      type: package_file
+      path: workflows/high_energy/tests/data/gamma_ray_code_merger_2012_comp.csvy
+    target: ia/merger_2012_comp.csvy
+
+  - id: example_full_csvy_model
+    family: format-example
+    description: Compact complete CSVY model showing velocity, density, and abundances in one file.
+    source:
+      type: package_file
+      path: model/tests/data/model_full_csvy.csvy
+    target: examples/model_full_csvy.csvy
+
+  - id: example_custom_density_simple_ascii
+    family: format-example
+    description: Simple ASCII density file format accepted by model.structure.type=file.
+    source:
+      type: package_file
+      path: model/tests/data/custom_density_tardis.dat
+    target: examples/custom_density_tardis.dat
+
+  - id: example_custom_abundance
+    family: format-example
+    description: Custom abundance table format accepted by model.abundances.type=file.
+    source:
+      type: package_file
+      path: model/tests/data/custom_abundance_tardis.dat
+    target: examples/custom_abundance_tardis.dat
