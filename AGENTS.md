@@ -53,6 +53,10 @@ python scripts/build_presentation_figures.py
 | `src/config.py` | JSON config loading with flattening, defaults, type coercion | `load_config()`, `flatten_config()` |
 | `src/acceleration_config.py` | Superfit/DASH/TARDIS acceleration config loading, worker/thread resolution, runtime env setup, TARDIS YAML overlays | `load_acceleration_config()`, `apply_runtime_environment()`, `apply_tardis_config_overrides()` |
 | `scripts/download_tardis_atom_data.py` | **TARDIS atomic data downloader**: downloads `kurucz_cd23_chianti_H_He_latest.h5` into `data/`, updates `~/.astropy/config/tardis_internal_config.yml` to point to project `data/` | `download_atom_data()` |
+| `src/tardis_model_resources.py` | **TARDIS model-resource manager**: copies package example CSVY/density/abundance resources into `data/tardis_models/` and writes an index for reproducibility | `download_resources()` |
+| `scripts/download_tardis_model_resources.py` | **TARDIS model-resource CLI**: dry-run or materialize model resources configured by `configs/tardis/model_resources.yml` | `main()` |
+| `src/tardis_tuning.py` | **TARDIS tuning helpers**: observed-spectrum loading, target seeds, analytic/CSVY candidate generation, config writing, scoring, and adoption helpers | `generate_candidates()`, `build_tardis_config()`, `score_model()` |
+| `scripts/run_tardis_tuning.py` | **TARDIS tuning CLI**: runs per-target candidate grids, writes comparison figures/scores, optionally adopts a checked best model | `main()` |
 
 ## Configuration
 
@@ -124,6 +128,16 @@ TARDIS simulation baseline for Type Ia SNe. YAML config with 7 sections (keys re
 
 **Notebook auto-generates** per-target config at `configs/tardis/{TARGET}.yml` by overriding luminosity, time_explosion, velocity range, and (for non-Ia) abundances from the base template.
 
+### `configs/tardis/model_resources.yml`
+
+Optional TARDIS model-resource manifest used by `scripts/download_tardis_model_resources.py`. It currently copies available package resources from the installed `tardis` environment rather than downloading large external grids:
+
+- Ia CSVY example models: delayed detonation, deflagration, double detonation, and merger composition examples.
+- Example density/abundance tables: package examples for testing file-backed model inputs.
+- Output location: `data/tardis_models/`, with `model_resources_index.csv` recording source, destination, size, and status.
+
+These CSVY resources are useful for qualitative experiments and format coverage, but they are model resources referenced by `csvy_model`, not standalone run configs, and they are not automatically better physical fits for sparse observed spectra.
+
 ## TNS Data Flow
 
 1. **Ensure catalog** (`ensure_catalog()`):
@@ -174,8 +188,11 @@ TARDIS simulation baseline for Type Ia SNe. YAML config with 7 sections (keys re
 - **Clean 2-column spectra**: `output/{target}/spectrum/spectrum_*.dat` — `np.savetxt` cleaned (wl flux), for astrodash
 - **Catalog cache**: `data/tns_public_objects.csv` (+ `.zip`)
 - **TARDIS atom data**: `data/kurucz_cd23_chianti_H_He_latest.h5` (~212 MB) — Kurucz CD23 + CHIANTI atomic data; downloaded once, shared by all simulations
+- **TARDIS model resources**: `data/tardis_models/` — optional package CSVY/density/abundance resources copied by `scripts/download_tardis_model_resources.py`
 - **TARDIS simulation spectrum**: `output/{target}/tardis/tardis_spectrum_{target}.dat` — 2-column ASCII (rest-frame wavelength A, luminosity density erg/s/A); 10000 points on 500-20000 A grid
 - **TARDIS per-target config**: `output/{target}/tardis/tardis_config_{target}.yml` — copy of the YAML config used for reproducibility
+- **TARDIS tuning experiments**: `output/tardis_tuning/{TARGET}/` for baseline tuning and `output/tardis_tuning/{TARGET}__{RUN_LABEL}/` for labeled experiments; contains `scores.csv`, candidate configs/spectra, and comparison PNGs
+- **TARDIS report assets**: `report/assets/tardis/` — local copies of adopted configs/spectra/figures plus selected experiment scores/figures for the Markdown report
 - **Analysis pipeline tables**: `output/analysis_pipeline/*.csv` — target status, spectra summary, line diagnostics with QC flags, blackbody color temperature, host-environment line indices. `scripts/build_analysis_products.py` writes unprefixed batch names; `notebooks/02_spectral_analysis_pipeline.ipynb` writes `<RUN_TAG>_*.csv` when saving interactively.
 - **Analysis pipeline figures**: `output/analysis_pipeline/figures/*.png` — target table, spectral sequences, velocity evolution, pEW evolution, color-temperature proxy, host-line detections. Interactive 02 outputs use target tags for shared summary figures.
 - **Presentation figures**: `ppt/figures/*.png` — slide-ready copies/composites generated from analysis outputs
@@ -240,7 +257,7 @@ TARDIS simulation baseline for Type Ia SNe. YAML config with 7 sections (keys re
 
 ## TARDIS Simulation Flow
 
-The current top-level TARDIS entry point is `notebooks/03_tardis_modeling_optional.ipynb`. It should not depend on `notebooks/legacy/` or legacy data: it reads local `data/SN*/` FITS spectra and 02 analysis products such as `<RUN_TAG>_target_status.csv`, `<RUN_TAG>_spectra_summary.csv`, and `<RUN_TAG>_line_diagnostics_qc.csv`; if an old `<RUN_TAG>_manual_redshift_summary.csv` exists, treat it as a legacy fallback only. Older manual TARDIS work is preserved under `notebooks/legacy/` only for provenance. Run this only in the `tardis` kernel/environment and treat it as qualitative support rather than the primary science pipeline.
+The current top-level TARDIS entry point is `notebooks/03_tardis_modeling_optional.ipynb`. For reproducible batch experiments, use `scripts/run_tardis_tuning.py` in the `tardis` environment. TARDIS should not depend on `notebooks/legacy/` or legacy data: it reads local `data/SN*/` FITS spectra and 02 analysis products such as `<RUN_TAG>_target_status.csv`, `<RUN_TAG>_spectra_summary.csv`, and `<RUN_TAG>_line_diagnostics_qc.csv`; if an old `<RUN_TAG>_manual_redshift_summary.csv` exists, treat it as a legacy fallback only. Older manual TARDIS work is preserved under `notebooks/legacy/` only for provenance. Run this only in the `tardis` kernel/environment and treat it as qualitative support rather than the primary science pipeline.
 
 1. **Load observed spectrum** — reads local one-dimensional FITS spectra from `data/SN*/`, not legacy `.dat` files.
 2. **Estimate target parameters from 02 products** — notebook uses the current 02 products (`target_status`, `spectra_summary`, `line_diagnostics_qc`) when available; if a legacy `manual_redshift_summary` still exists, treat it only as a fallback. Manual overrides remain available for redshift, type, velocity, epoch, apparent magnitude, and log luminosity.
@@ -248,10 +265,17 @@ The current top-level TARDIS entry point is `notebooks/03_tardis_modeling_option
    - `luminosity_requested` starts from manual log(Lsun), or apparent magnitude + Planck18 luminosity distance, or a conservative type default.
    - `velocity start/stop` starts from adopted/check line velocity; for Ia, the photospheric proxy uses ~0.7×line velocity.
 3. **Build YAML config** — loads `configs/tardis/base_Ia.yml` template, overrides supernova/model/velocity params, adjusts rough abundances for non-Ia families, applies `configs/acceleration.json` TARDIS YAML overrides, writes to `configs/tardis/{TARGET}.yml`
-4. **Check atomic data** — verifies `data/kurucz_cd23_chianti_H_He_latest.h5` exists (~212 MB); if missing, instructs user to run `scripts/download_tardis_atom_data.py`
-5. **Run simulation** — `run_tardis(config_path, show_convergence_plots=False, log_level="WARNING")` → returns `Simulation` object
-6. **Compare spectra** — de-redshifts selected local FITS spectrum to rest frame, normalises both, plots overlay + residual in 2-panel figure
-7. **Save results** — writes TARDIS spectrum `.dat`, comparison PNG, and config copy to `output/{target}/tardis/`
+4. **Check atomic data** — verifies `data/kurucz_cd23_chianti_H_He_latest.h5` exists (~212 MB); if missing, run `scripts/download_tardis_atom_data.py`.
+5. **Optional model resources** — run `scripts/download_tardis_model_resources.py` to copy package CSVY/density/abundance resources into `data/tardis_models/`. Use `--dry-run` to inspect sources without writing.
+6. **Run simulation or tuning** — notebook uses `run_tardis(config_path, show_convergence_plots=False, log_level="WARNING")`; CLI tuning uses `python scripts/run_tardis_tuning.py --target SN2026KID --run-label analytic_refine --packet-scale quick`.
+7. **Compare spectra** — de-redshifts selected local FITS spectrum to rest frame, normalises both, plots overlay + residual in 2-panel figure.
+8. **Save results** — writes candidate spectra/configs under `output/tardis_tuning/`; only checked/adopted models should be copied to `configs/tardis/{TARGET}.yml` and `output/{target}/tardis/`.
+
+Useful tuning flags:
+- `--run-label LABEL` keeps exploratory output under `output/tardis_tuning/{TARGET}__{LABEL}/` instead of overwriting the baseline tuning directory.
+- `--include-model-resources` adds Ia CSVY model-resource candidates to the analytic grid.
+- `--model-resource-only` runs only CSVY model-resource candidates.
+- `--adopt-best` copies the best-scoring candidate into `configs/tardis/` and `output/{target}/tardis/`; use it only after inspecting `scores.csv` and comparison PNGs.
 
 **Notebook metadata:** use the `tardis` environment/kernel for TARDIS cells. Keep `RUN_TARDIS=False` while checking configuration; set it to `True` only when the TARDIS environment and atom data are ready.
 
@@ -269,6 +293,8 @@ The installed TARDIS is **v2 development version** (0.1.dev1). The API differs s
 | `Configuration.from_yaml(path)` | Same — still works |
 | `run_tardis(config_path)` | Same — still works; keyword args: `show_convergence_plots`, `log_level`, `show_progress_bars` |
 
+In the current environment, import `Configuration` as `from tardis.io.configuration.config_reader import Configuration`; it is not exported from the `tardis.io.configuration` package root.
+
 **Spectrum object** (`TARDISSpectrum` from `tardis.spectrum.spectrum`):
 - `.wavelength` — Quantity array (Angstrom), descending order (20000→500 A), len=10000
 - `.luminosity_density_lambda` — Quantity array (erg/s/A), no `distance` needed
@@ -285,6 +311,8 @@ The installed TARDIS is **v2 development version** (0.1.dev1). The API differs s
 - `.spectrum_solver.spectrum_integrated` — integrated spectrum
 - `.iterations_executed` — number of completed iterations
 - `.luminosity_requested` — target luminosity used (erg/s)
+
+**Spectrum extraction for tuning:** prefer finite spectra in this order: integrated, virtual packets, real packets. Some CSVY resource runs in the current TARDIS v2 environment can produce `spectrum_integrated` with length 1 and `NaN`; skip that and fall back to virtual or real packets before scoring/plotting. Real-packet spectra can look like narrow vertical spikes when packet statistics are low or bin sampling is sparse; increase packets/virtual packets for smoother final comparison, but always judge against the observed line positions and broad features rather than smoothness alone.
 
 **TARDIS internal config path:** `~/.astropy/config/tardis_internal_config.yml` contains `data_dir` pointing to project `data/`. Atom data file must be at `data/kurucz_cd23_chianti_H_He_latest.h5`. Use `get_data_dir()` from `tardis.io.configuration.config_internal` to resolve at runtime.
 
@@ -305,6 +333,8 @@ The installed TARDIS is **v2 development version** (0.1.dev1). The API differs s
 - The IERS warning about leap seconds is harmless (set `iers.conf.auto_download = False`)
 - Target name normalization: strips `SN`/`AT` prefix, removes spaces for TNS lookup
 - Config key flattening: nested dict sections (`observing`, `tns`, `output`) are flattened into a single dict; keys are `lower_snake_case`
+- Long CSVY TARDIS tuning grids can accumulate memory and exit with code 137. Prefer small labeled batches, then validate one or two promising candidates with `--packet-scale final`.
+- Current second-pass TARDIS check found no final adopted improvement from package CSVY resources. Keep the adopted model table in `report/tardis_report.md` as the source of truth unless a final-packet validation improves both score and visual line agreement.
 
 ## Notebooks
 
@@ -351,3 +381,5 @@ python scripts/build_analysis_products.py
 - Use TARDIS v1 API (`sim.model`, `sim.transport.spectrum`, `spectrum.flux`) — this project uses TARDIS v2 dev (see API notes above)
 - Store atomic data outside project `data/` directory — TARDIS internal config must point to project data
 - Use relative paths for `atom_data` in TARDIS YAML — prefer absolute path resolved from project root
+- Overwrite baseline TARDIS tuning runs for exploratory experiments; use `--run-label` unless intentionally replacing the baseline.
+- Use `--adopt-best` solely from the numeric score without inspecting the comparison PNG and checking whether a final-packet rerun preserves the improvement.

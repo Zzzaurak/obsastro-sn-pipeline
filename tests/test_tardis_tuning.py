@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
+from scripts import run_tardis_tuning as runner
 from src import tardis_tuning as tt
 
 
@@ -94,6 +95,133 @@ class TardisTuningTests(unittest.TestCase):
         self.assertEqual(config["model"]["abundances"]["type"], "uniform")
         self.assertIn("O", config["model"]["abundances"])
         self.assertEqual(config["montecarlo"]["iterations"], 3)
+
+    def test_model_resource_candidate_builds_csvy_config(self) -> None:
+        candidate = tt.TardisCandidate(
+            target="SN2026FVX",
+            candidate_id="SN2026FVX_c000",
+            sn_family="Ia",
+            log_lsun=9.4,
+            time_explosion_days=24.0,
+            v_start_kms=5000.0,
+            v_stop_kms=16000.0,
+            density_profile="csvy_model",
+            abundance_preset="ia_ddt_n100_comp",
+            model_resource="ia/ddt_n100_comp.csvy",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "data" / "tardis_models" / "ia").mkdir(parents=True)
+            csvy = root / "data" / "tardis_models" / "ia" / "ddt_n100_comp.csvy"
+            csvy.write_text("velocity,density,C,O\n9000,5e-10,0.1,0.9\n", encoding="utf-8")
+            config = tt.build_tardis_config(candidate, project_root=root, packet_scale="quick")
+
+        self.assertEqual(config["csvy_model"], str(csvy.resolve()))
+        self.assertNotIn("model", config)
+        self.assertEqual(config["plasma"]["ionization"], "nebular")
+        self.assertEqual(config["plasma"]["excitation"], "dilute-lte")
+        self.assertEqual(config["plasma"]["line_interaction_type"], "scatter")
+
+    def test_generate_candidates_can_include_ia_model_resources(self) -> None:
+        seed = tt.TargetSeed(
+            target="SN2026FVX",
+            sn_type="SN Ia",
+            sn_family="Ia",
+            z=0.02,
+            spectrum_file="data/SN2026FVX/spec.fits",
+            log_lsun=9.4,
+            time_explosion_days=24.0,
+            v_start_kms=5000.0,
+            v_stop_kms=16000.0,
+        )
+
+        candidates = tt.generate_candidates(
+            seed,
+            luminosity_offsets=[0.0],
+            epoch_offsets=[0.0],
+            velocity_scales=[1.0],
+            abundance_presets=["ia_standard"],
+            density_profiles=["branch85_w7"],
+            model_resources=["ia/ddt_n100_comp.csvy", "ia/merger_2012_comp.csvy"],
+        )
+
+        self.assertEqual(len(candidates), 3)
+        self.assertIsNone(candidates[0].model_resource)
+        self.assertEqual(candidates[1].model_resource, "ia/ddt_n100_comp.csvy")
+        self.assertEqual(candidates[1].candidate_id, "SN2026FVX_m000")
+        self.assertEqual(candidates[1].density_profile, "csvy_model")
+        self.assertEqual(candidates[2].abundance_preset, "ia/merger_2012_comp.csvy")
+
+    def test_generate_candidates_can_run_model_resources_without_analytic_grid(self) -> None:
+        seed = tt.TargetSeed(
+            target="SN2026FVX",
+            sn_type="SN Ia",
+            sn_family="Ia",
+            z=0.02,
+            spectrum_file="data/SN2026FVX/spec.fits",
+            log_lsun=9.4,
+            time_explosion_days=24.0,
+            v_start_kms=5000.0,
+            v_stop_kms=16000.0,
+        )
+
+        candidates = tt.generate_candidates(
+            seed,
+            luminosity_offsets=[-0.2, 0.0],
+            epoch_offsets=[0.0, 4.0],
+            velocity_scales=[1.0],
+            abundance_presets=[],
+            density_profiles=[],
+            model_resources=["ia/ddt_n100_comp.csvy"],
+        )
+
+        self.assertEqual(len(candidates), 4)
+        self.assertTrue(all(candidate.model_resource == "ia/ddt_n100_comp.csvy" for candidate in candidates))
+        self.assertEqual([candidate.candidate_id for candidate in candidates], ["SN2026FVX_m000", "SN2026FVX_m001", "SN2026FVX_m002", "SN2026FVX_m003"])
+        self.assertEqual([candidate.log_lsun for candidate in candidates], [9.2, 9.2, 9.4, 9.4])
+        self.assertEqual([candidate.time_explosion_days for candidate in candidates], [24.0, 28.0, 24.0, 28.0])
+
+    def test_available_model_resources_returns_relative_ia_csvy_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "data" / "tardis_models" / "ia").mkdir(parents=True)
+            (root / "data" / "tardis_models" / "ia" / "b.csvy").write_text("b", encoding="utf-8")
+            (root / "data" / "tardis_models" / "ia" / "a.csvy").write_text("a", encoding="utf-8")
+
+            self.assertEqual(tt.available_model_resources(root, "Ia"), ["ia/a.csvy", "ia/b.csvy"])
+            self.assertEqual(tt.available_model_resources(root, "II"), [])
+
+    def test_extract_tardis_arrays_skips_nan_integrated_spectrum(self) -> None:
+        class Quantity:
+            def __init__(self, values: list[float]) -> None:
+                self.value = np.asarray(values, dtype=float)
+
+        class Spectrum:
+            def __init__(self, wave: list[float], flux: list[float]) -> None:
+                self.wavelength = Quantity(wave)
+                self.luminosity_density_lambda = Quantity(flux)
+
+        class Solver:
+            spectrum_integrated = Spectrum([np.nan], [np.nan])
+            spectrum_virtual_packets = Spectrum([7000.0, 5000.0], [2.0, 1.0])
+            spectrum_real_packets = Spectrum([6000.0], [3.0])
+
+        class Simulation:
+            spectrum_solver = Solver()
+
+        wave, flux = runner.extract_tardis_arrays(Simulation())
+
+        np.testing.assert_allclose(wave, [5000.0, 7000.0])
+        np.testing.assert_allclose(flux, [1.0, 2.0])
+
+    def test_tuning_target_dir_uses_run_label_suffix(self) -> None:
+        root = Path("/project")
+
+        self.assertEqual(runner.tuning_target_dir(root, "SN2026FVX", ""), Path("/project/output/tardis_tuning/SN2026FVX"))
+        self.assertEqual(
+            runner.tuning_target_dir(root, "SN2026FVX", "csvy Ia pass"),
+            Path("/project/output/tardis_tuning/SN2026FVX__csvy_Ia_pass"),
+        )
 
 
 if __name__ == "__main__":

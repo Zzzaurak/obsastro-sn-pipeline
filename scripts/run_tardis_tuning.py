@@ -43,6 +43,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--reuse-existing", action="store_true", help="reuse candidate spectra already on disk")
     parser.add_argument("--adopt-best", action="store_true", help="copy each target's best result into configs/tardis and output/<target>/tardis")
     parser.add_argument(
+        "--run-label",
+        default="",
+        help="optional label appended to output/tardis_tuning/<target> to keep exploratory runs separate",
+    )
+    parser.add_argument(
+        "--include-model-resources",
+        action="store_true",
+        help="include CSVY model resources from data/tardis_models for Type Ia targets",
+    )
+    parser.add_argument(
+        "--model-resource-only",
+        action="store_true",
+        help="run only CSVY model-resource candidates; implies --include-model-resources",
+    )
+    parser.add_argument(
         "--luminosity-offsets",
         type=parse_float_list,
         default=[0.0, -0.35, 0.35],
@@ -61,6 +76,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="comma-separated multiplicative velocity-boundary scales",
     )
     return parser.parse_args(argv)
+
+
+def safe_label(value: str) -> str:
+    text = str(value or "").strip()
+    return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in text).strip("_")
+
+
+def tuning_target_dir(project_root: Path, target: str, run_label: str = "") -> Path:
+    suffix = safe_label(run_label)
+    name = target if not suffix else f"{target}__{suffix}"
+    return project_root / "output" / "tardis_tuning" / name
 
 
 def selected_epoch_days(context: dict[str, object]) -> float:
@@ -111,17 +137,20 @@ def observed_rest_spectrum(context: dict[str, object]) -> tuple[np.ndarray, np.n
 
 
 def extract_tardis_arrays(sim) -> tuple[np.ndarray, np.ndarray]:
-    spectrum = None
     for attr in ("spectrum_integrated", "spectrum_virtual_packets", "spectrum_real_packets"):
         spectrum = getattr(sim.spectrum_solver, attr, None)
-        if spectrum is not None:
-            break
-    if spectrum is None:
-        raise ValueError("simulation does not expose an extractable TARDIS spectrum")
-    wave = np.asarray(spectrum.wavelength.value, dtype=float)
-    flux = np.asarray(spectrum.luminosity_density_lambda.value, dtype=float)
-    order = np.argsort(wave)
-    return wave[order], flux[order]
+        if spectrum is None:
+            continue
+        wave = np.asarray(spectrum.wavelength.value, dtype=float)
+        flux = np.asarray(spectrum.luminosity_density_lambda.value, dtype=float)
+        finite = np.isfinite(wave) & np.isfinite(flux)
+        if finite.sum() < 2:
+            continue
+        wave = wave[finite]
+        flux = flux[finite]
+        order = np.argsort(wave)
+        return wave[order], flux[order]
+    raise ValueError("simulation does not expose a finite extractable TARDIS spectrum")
 
 
 def run_tardis_config(config_path: Path) -> tuple[np.ndarray, np.ndarray]:
@@ -205,6 +234,7 @@ def row_for_candidate(
         "v_stop_kms": candidate.v_stop_kms,
         "density_profile": candidate.density_profile,
         "abundance_preset": candidate.abundance_preset,
+        "model_resource": candidate.model_resource or "",
         "config_path": str(config_path),
         "spectrum_path": str(spectrum_path),
         "plot_path": str(plot_path),
@@ -225,18 +255,28 @@ def run_target(
     luminosity_offsets: list[float],
     epoch_offsets: list[float],
     velocity_scales: list[float],
+    include_model_resources: bool,
+    model_resource_only: bool,
+    run_label: str,
 ) -> dict[str, object]:
     context = snt.estimate_tardis_context(project_root, target, spectrum_index=spectrum_index)
     seed = seed_from_context(context)
     obs_wave, obs_flux = observed_rest_spectrum(context)
     line_windows = tt.line_windows_for_family(seed.sn_family)
-    target_dir = project_root / "output" / "tardis_tuning" / seed.target
+    target_dir = tuning_target_dir(project_root, seed.target, run_label)
     scores_path = target_dir / "scores.csv"
+    use_model_resources = include_model_resources or model_resource_only
+    model_resources = tt.available_model_resources(project_root, seed.sn_family) if use_model_resources else []
+    if model_resource_only and not model_resources:
+        raise RuntimeError(f"no model resources available for {seed.target} family={seed.sn_family}")
     candidates = tt.generate_candidates(
         seed,
         luminosity_offsets=luminosity_offsets,
         epoch_offsets=epoch_offsets,
         velocity_scales=velocity_scales,
+        abundance_presets=[] if model_resource_only else None,
+        density_profiles=[] if model_resource_only else None,
+        model_resources=model_resources,
         max_candidates=max_candidates,
     )
     rows: list[dict[str, object]] = []
@@ -246,6 +286,8 @@ def run_target(
         f"L={seed.log_lsun:.2f} t={seed.time_explosion_days:.1f} "
         f"v={seed.v_start_kms:.0f}-{seed.v_stop_kms:.0f} km/s"
     )
+    if model_resources:
+        print(f"[{seed.target}] model resources: {', '.join(model_resources)}")
     for candidate in candidates:
         config_path, spectrum_path, plot_path = candidate_paths(target_dir, candidate)
         try:
@@ -353,6 +395,9 @@ def main(argv: list[str] | None = None) -> int:
                 luminosity_offsets=args.luminosity_offsets,
                 epoch_offsets=args.epoch_offsets,
                 velocity_scales=args.velocity_scales,
+                include_model_resources=args.include_model_resources,
+                model_resource_only=args.model_resource_only,
+                run_label=args.run_label,
             )
         )
     print("\nBest candidates:")
@@ -362,7 +407,8 @@ def main(argv: list[str] | None = None) -> int:
             f"score={float(summary['total_score']):.3f} "
             f"L={float(summary['log_lsun']):.2f} "
             f"t={float(summary['time_explosion_days']):.1f} "
-            f"v={float(summary['v_start_kms']):.0f}-{float(summary['v_stop_kms']):.0f}"
+            f"v={float(summary['v_start_kms']):.0f}-{float(summary['v_stop_kms']):.0f} "
+            f"resource={summary.get('model_resource', '') or 'analytic'}"
         )
     return 0
 

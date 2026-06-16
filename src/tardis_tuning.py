@@ -49,6 +49,7 @@ class TardisCandidate:
     v_stop_kms: float
     density_profile: str
     abundance_preset: str
+    model_resource: str | None = None
 
 
 @dataclass(frozen=True)
@@ -231,6 +232,16 @@ def line_windows_for_family(family: str) -> tuple[LineWindow, ...]:
     return LINE_WINDOWS_BY_FAMILY.get(str(family or "").strip(), LINE_WINDOWS_BY_FAMILY["Ia"])
 
 
+def available_model_resources(project_root: Path | str, family: str) -> list[str]:
+    if str(family or "").strip() != "Ia":
+        return []
+    root = Path(project_root).resolve()
+    model_dir = root / "data" / "tardis_models" / "ia"
+    if not model_dir.exists():
+        return []
+    return [str(path.relative_to(root / "data" / "tardis_models")) for path in sorted(model_dir.glob("*.csvy"))]
+
+
 def generate_candidates(
     seed: TargetSeed,
     *,
@@ -239,11 +250,12 @@ def generate_candidates(
     velocity_scales: Sequence[float] = (0.85, 1.0, 1.15),
     abundance_presets: Sequence[str] | None = None,
     density_profiles: Sequence[str] | None = None,
+    model_resources: Sequence[str] | None = None,
     max_candidates: int | None = None,
 ) -> list[TardisCandidate]:
     target = canonical_target(seed.target)
-    abundance_presets = list(abundance_presets or abundance_presets_for_family(seed.sn_family))
-    density_profiles = list(density_profiles or density_profiles_for_family(seed.sn_family))
+    abundance_presets = list(abundance_presets_for_family(seed.sn_family) if abundance_presets is None else abundance_presets)
+    density_profiles = list(density_profiles_for_family(seed.sn_family) if density_profiles is None else density_profiles)
     candidates: list[TardisCandidate] = []
     limit = math.inf if max_candidates is None else max(0, int(max_candidates))
     for lum_offset in luminosity_offsets:
@@ -268,6 +280,27 @@ def generate_candidates(
                                 abundance_preset=str(abundance_preset),
                             )
                         )
+    for lum_offset in luminosity_offsets:
+        for epoch_offset in epoch_offsets:
+            for model_resource in model_resources or ():
+                if len(candidates) >= limit:
+                    return candidates
+                resource = str(model_resource)
+                model_index = sum(1 for candidate in candidates if candidate.model_resource)
+                candidates.append(
+                    TardisCandidate(
+                        target=target,
+                        candidate_id=f"{target}_m{model_index:03d}",
+                        sn_family=seed.sn_family,
+                        log_lsun=round(float(seed.log_lsun) + float(lum_offset), 4),
+                        time_explosion_days=max(3.0, round(float(seed.time_explosion_days) + float(epoch_offset), 4)),
+                        v_start_kms=round(float(seed.v_start_kms), 4),
+                        v_stop_kms=round(float(seed.v_stop_kms), 4),
+                        density_profile="csvy_model",
+                        abundance_preset=resource,
+                        model_resource=resource,
+                    )
+                )
     return candidates
 
 
@@ -305,25 +338,13 @@ def build_tardis_config(
     nthreads: int | None = None,
 ) -> dict[str, object]:
     root = Path(project_root).resolve()
-    return {
+    config: dict[str, object] = {
         "tardis_config_version": "v1.0",
         "supernova": {
             "luminosity_requested": f"{candidate.log_lsun:.2f} log_lsun",
             "time_explosion": f"{candidate.time_explosion_days:.1f} day",
         },
         "atom_data": str((root / "data" / ATOM_DATA_FILE).resolve()),
-        "model": {
-            "structure": {
-                "type": "specific",
-                "velocity": {
-                    "start": f"{candidate.v_start_kms:.1f} km/s",
-                    "stop": f"{candidate.v_stop_kms:.1f} km/s",
-                    "num": 20,
-                },
-                "density": density_config(candidate.density_profile),
-            },
-            "abundances": abundance_config(candidate.abundance_preset),
-        },
         "plasma": {
             "ionization": "lte",
             "excitation": "lte",
@@ -339,6 +360,40 @@ def build_tardis_config(
             "integrated": {"compute": "Automatic", "points": 1000},
         },
     }
+    if candidate.model_resource:
+        resource = Path(candidate.model_resource)
+        if resource.is_absolute():
+            model_path = resource.resolve()
+        else:
+            model_path = (root / "data" / "tardis_models" / resource).resolve()
+            try:
+                model_path.relative_to((root / "data" / "tardis_models").resolve())
+            except ValueError as exc:
+                raise ValueError(f"model resource escapes data/tardis_models: {candidate.model_resource}") from exc
+        if not model_path.exists():
+            raise FileNotFoundError(f"TARDIS model resource not found: {model_path}")
+        config["csvy_model"] = str(model_path)
+        config["plasma"] = {
+            "ionization": "nebular",
+            "excitation": "dilute-lte",
+            "radiative_rates_type": "dilute-blackbody",
+            "line_interaction_type": "scatter",
+        }
+        return config
+
+    config["model"] = {
+        "structure": {
+            "type": "specific",
+            "velocity": {
+                "start": f"{candidate.v_start_kms:.1f} km/s",
+                "stop": f"{candidate.v_stop_kms:.1f} km/s",
+                "num": 20,
+            },
+            "density": density_config(candidate.density_profile),
+        },
+        "abundances": abundance_config(candidate.abundance_preset),
+    }
+    return config
 
 
 def score_spectra(
