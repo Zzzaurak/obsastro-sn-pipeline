@@ -888,7 +888,10 @@ def quality_flag_lines(line_df: pd.DataFrame) -> pd.DataFrame:
             fwhm = parse_float(row.get("FWHM_A"))
             depth = parse_float(row.get("depth"))
             pew = parse_float(row.get("pEW_A"))
+            z = parse_float(row.get("z"))
             primary = row.get("line") in primary_lines_for_type(row.get("type"))
+            if not np.isfinite(z):
+                notes.append("missing TNS redshift; quantitative line velocity is not adopted")
             if not primary:
                 notes.append("secondary line; use only after visual inspection")
             if not np.isfinite(velocity) or velocity < 1000 or velocity > 26000:
