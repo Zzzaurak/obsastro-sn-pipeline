@@ -30,13 +30,14 @@ python scripts/build_presentation_figures.py
 - README and top-level notebooks can use Chinese explanatory text.
 - Top-level notebooks are edited directly; treat `notebooks/02_spectral_analysis_pipeline.ipynb` as the canonical source for the spectral-analysis workflow and keep README/notebook README text in sync when you change it.
 - In `notebooks/02_spectral_analysis_pipeline.ipynb`, keep the single-line local-check output concise. Show the candidate-line table, the selected `CHECK_LINE_INDEX` when `CHECK_LINE_KEY=None`, and the preview-only overrides (`CHECK_HALF_WIDTH`, `CHECK_SMOOTH_WINDOW`, `CHECK_EDGE_FRACTION`). Do not reintroduce a separate redshift-check section unless the user explicitly asks.
+- Absorption-line measurements use the smoothed, locally normalized trough minimum for `abs_wave`/velocity/depth, and a non-parametric half-depth width for FWHM. Do not reintroduce a Gaussian absorption fit or purple model curve unless the user explicitly asks for a comparison-only diagnostic.
 
 ## Module Map
 
 | File | Role | Entry Points |
 |------|------|-------------|
 | `src/pipeline.py` | **Core orchestrator**: config loading, TNS data acquisition (catalog + page scraping), observability calculation, finder chart download, report generation | `run_pipeline(config_path)` |
-| `src/spectral_pipeline.py` | **Current main science pipeline**: reads calibrated 1-D FITS spectra, rest-frame correction, sparse-spectrum line diagnostics, pEW/FWHM, blackbody color temperature, host-line indices, QC flags, CSV/figure generation | `build_all(project_root, output_dir)` |
+| `src/spectral_pipeline.py` | **Current main science pipeline**: reads calibrated 1-D FITS spectra, rest-frame correction, minimum-trough line velocities/depths, pEW/non-parametric FWHM, blackbody color temperature, host-line indices, QC flags, CSV/figure generation | `build_all(project_root, output_dir)` |
 | `src/finder.py` | **Finder chart generator**: astroquery SkyView query + matplotlib WCS plot with crosshair, scale bar | `generate_finder_chart()` |
 | `scripts/fetch_target_params.py` | **CLI wrapper**: invokes `python -m src.pipeline` from project root | `main()` |
 | `src/fetch_aux_data.py` | **Aux data orchestrator**: Lasair light curve + WISeREP spectra acquisition | `run(config_path)` |
@@ -343,7 +344,7 @@ Current top-level notebooks are curated deliverables. Older exploratory notebook
 | Notebook | Role |
 |----------|------|
 | `notebooks/01_data_collection_and_observing.ipynb` | Target metadata, observing preparation, and product inventory. Remote refresh is opt-in. |
-| `notebooks/02_spectral_analysis_pipeline.ipynb` | Main interactive spectral diagnostics notebook; reads local FITS, adopts TNS redshift, supports type-aware automatic line selection, single-line local checks with `CHECK_LINE_INDEX`, target-tagged CSV/figure output, and local diagnostic plots. |
+| `notebooks/02_spectral_analysis_pipeline.ipynb` | Main interactive spectral diagnostics notebook; reads local FITS, adopts TNS redshift, supports type-aware automatic line selection, minimum-trough absorption measurements, single-line local checks with `CHECK_LINE_INDEX`, target-tagged CSV/figure output, and local diagnostic plots. |
 | `notebooks/03_tardis_modeling_optional.ipynb` | Optional self-contained TARDIS setup/simulation notebook; uses local FITS and 02 products for starting parameters, no legacy dependency. |
 | `notebooks/04_project_report.ipynb` | Chinese P2Rp2-style report notebook with question, data, analysis, figures, interpretation, conclusions, and contribution placeholders. |
 
@@ -351,7 +352,7 @@ Legacy notebooks in `notebooks/legacy/` include earlier DASH, Superfit, spectral
 
 ## Current Analysis Status
 
-- Completed first-pass automation: multi-epoch spectral sequences, type-aware line velocity measurements, pEW/FWHM/depth, blackbody color-temperature proxy, host-line indices, target-level summary, and report-ready figures.
+- Completed first-pass automation: multi-epoch spectral sequences, type-aware minimum-trough line velocity measurements, pEW/non-parametric FWHM/depth, blackbody color-temperature proxy, host-line indices, target-level summary, and report-ready figures.
 - Still partial: TARDIS modeling is qualitative only and not an automatic physical fitter, but the top-level 03 workflow is now self-contained from current project data/products.
 - Still partial: host extinction/environment diagnostics are rough line-index outputs, not fully flux-calibrated environmental measurements.
 - Still required before final science claims: inspect `line_diagnostics_qc.csv` or `<RUN_TAG>_line_diagnostics_qc.csv`, especially `qc_flag=check`, and maintain a final adopted-measurements table for values used in reports/slides.

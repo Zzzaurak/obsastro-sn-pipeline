@@ -1489,7 +1489,7 @@ def measure_absorption_line_tuned(
         result = sp.format_absorption_line_result(
             line_key,
             line,
-            {"status": "outside wavelength range", "fit_method": "gaussian_absorption"},
+            {"status": "outside wavelength range", "fit_method": "minimum_absorption"},
             pEW_A=np.nan,
         )
         result["pEW_err_A"] = np.nan
@@ -1504,7 +1504,7 @@ def measure_absorption_line_tuned(
         result = sp.format_absorption_line_result(
             line_key,
             line,
-            {"status": "bad local continuum", "fit_method": "gaussian_absorption"},
+            {"status": "bad local continuum", "fit_method": "minimum_absorption"},
             pEW_A=np.nan,
         )
         result["pEW_err_A"] = np.nan
@@ -1525,9 +1525,15 @@ def measure_absorption_line_tuned(
         noise_proxy=raw_norm - norm,
         integration_mask=absorption > 0,
     )
-    fit = sp.fit_normalized_absorption_line(wave, norm, rest, half_width, blue_only=line.get("blue_only", True))
-    chi2 = sp.estimate_reduced_chi2(norm, fit.get("fit_norm"), noise_proxy=raw_norm - norm)
-    result = sp.format_absorption_line_result(line_key, line, fit, pEW_A=pew, fit_chi2_red=chi2)
+    fit = sp.fit_normalized_absorption_line(
+        wave,
+        norm,
+        rest,
+        half_width,
+        blue_only=line.get("blue_only", True),
+        noise_proxy=raw_norm - norm,
+    )
+    result = sp.format_absorption_line_result(line_key, line, fit, pEW_A=pew)
     result["pEW_err_A"] = pew_err
     profile = {
         "wave": wave,
@@ -1536,7 +1542,6 @@ def measure_absorption_line_tuned(
         "continuum": continuum,
         "norm": norm,
         "absorption": absorption,
-        "fit_norm": fit.get("fit_norm"),
         "fit_info": fit,
         "params": params,
     }
@@ -1976,17 +1981,13 @@ def plot_line_diagnostics_grid(
         continuum = profile["continuum"]
         norm = profile["norm"]
         raw_norm = raw_flux / continuum
-        fit_norm = profile["fit_norm"]
 
         ax_flux.plot(wave, raw_flux, color="0.72", lw=0.7, label="raw flux")
         ax_flux.plot(wave, smooth, color="black", lw=0.9, label="smoothed flux")
         ax_flux.plot(wave, continuum, color="#d99032", lw=1.1, label="local linear continuum")
         ax_flux.fill_between(wave, smooth, continuum, where=continuum > smooth, color="#7b3294", alpha=0.10)
         ax_flux.axvline(result["rest_wave"], color="red", ls="--", lw=0.9, label="rest line")
-        legacy_wave = result.get("extrema_wave_A", np.nan)
-        if np.isfinite(legacy_wave):
-            ax_flux.axvline(legacy_wave, color="0.6", ls=":", lw=1.0, label="legacy minimum reference")
-        ax_flux.axvline(result["abs_wave"], color="green", ls=":", lw=1.2, label="Gaussian center")
+        ax_flux.axvline(result["abs_wave"], color="green", ls=":", lw=1.2, label="absorption minimum")
         title = f"{row['target']} {row['line']}\n{Path(row['file']).name}"
         ax_flux.set_title(title, fontsize=8, pad=3)
         ax_flux.set_ylabel("Flux")
@@ -1995,11 +1996,7 @@ def plot_line_diagnostics_grid(
 
         ax_norm.plot(wave, raw_norm, color="0.72", lw=0.7, label="raw / continuum")
         ax_norm.plot(wave, norm, color="black", lw=1.0, label="smoothed / continuum")
-        if profile["fit_norm"] is not None:
-            ax_norm.plot(wave, fit_norm, color="#7b3294", lw=1.0, label="Gaussian fit used for measurement")
         ax_norm.axvline(result["rest_wave"], color="red", ls="--", lw=0.9)
-        if np.isfinite(legacy_wave):
-            ax_norm.axvline(legacy_wave, color="0.6", ls=":", lw=1.0)
         ax_norm.axvline(result["abs_wave"], color="green", ls=":", lw=1.2)
         ax_norm.fill_between(
             wave,
@@ -2016,8 +2013,6 @@ def plot_line_diagnostics_grid(
             ax_norm.set_xlabel("")
         ax_norm.set_ylabel("Normalized flux")
         ax_norm.grid(alpha=0.2)
-        chi2 = result.get("fit_chi2_red", np.nan)
-        chi2_text = f"\nchi2r={chi2:.2f}" if np.isfinite(chi2) else ""
         velocity_text = _format_value_with_uncertainty(
             result.get("velocity_kms"),
             result.get("velocity_err_kms"),
@@ -2048,7 +2043,7 @@ def plot_line_diagnostics_grid(
         ax_norm.text(
             0.02,
             0.05,
-            f"v={velocity_text}\npEW={pew_text}, FWHM={fwhm_text}\ndepth={depth_text}{chi2_text}",
+            f"v={velocity_text}\npEW={pew_text}, FWHM={fwhm_text}\ndepth={depth_text}",
             transform=ax_norm.transAxes,
             fontsize=8,
             bbox={"facecolor": "white", "alpha": 0.75, "edgecolor": "0.85"},
@@ -2110,22 +2105,16 @@ def plot_line_check(
     smooth = profile["smooth"]
     continuum = profile["continuum"]
     norm = profile["norm"]
-    fit_norm = profile["fit_norm"]
     rest = result["rest_wave"]
     abs_wave = result["abs_wave"]
-    legacy_wave = result.get("extrema_wave_A", np.nan)
 
     fig, axes = plt.subplots(2, 1, figsize=(11, 7), sharex=True, gridspec_kw={"height_ratios": [2, 1]})
     axes[0].plot(wave, raw_flux, color="0.72", lw=0.7, label="raw local spectrum")
     axes[0].plot(wave, smooth, color="black", lw=1.0, label="smoothed observed profile")
     axes[0].plot(wave, continuum, color="#d99032", lw=1.2, label="local linear continuum")
-    if fit_norm is not None:
-        axes[0].plot(wave, fit_norm * continuum, color="#7b3294", lw=1.2, label="Gaussian fit used for measurement")
     axes[0].fill_between(wave, smooth, continuum, where=continuum > smooth, color="#7b3294", alpha=0.12)
     axes[0].axvline(rest, color="red", ls="--", lw=1.0, label="rest wavelength")
-    if np.isfinite(legacy_wave):
-        axes[0].axvline(legacy_wave, color="0.6", ls=":", lw=1.0, label="legacy minimum reference")
-    axes[0].axvline(abs_wave, color="green", ls=":", lw=1.3, label="Gaussian center")
+    axes[0].axvline(abs_wave, color="green", ls=":", lw=1.3, label="absorption minimum")
     axes[0].set_ylabel(spec.get("bunit", "Flux"))
     axes[0].set_title(f"{spec['target']} {Path(spec['file']).name} {line_key}")
     axes[0].grid(alpha=0.2)
@@ -2134,13 +2123,9 @@ def plot_line_check(
     raw_norm = raw_flux / continuum
     axes[1].plot(wave, raw_norm, color="0.72", lw=0.7, label="raw / continuum")
     axes[1].plot(wave, norm, color="black", lw=1.0, label="smoothed / continuum")
-    if fit_norm is not None:
-        axes[1].plot(wave, fit_norm, color="#7b3294", lw=1.2, label="Gaussian fit used for measurement")
     axes[1].fill_between(wave, norm, 1.0, where=norm < 1.0, color="#7b3294", alpha=0.18, label="pEW area")
     axes[1].axhline(1.0, color="#d99032", lw=1.0)
     axes[1].axvline(rest, color="red", ls="--", lw=1.0)
-    if np.isfinite(legacy_wave):
-        axes[1].axvline(legacy_wave, color="0.6", ls=":", lw=1.0)
     axes[1].axvline(abs_wave, color="green", ls=":", lw=1.3)
     axes[1].set_xlabel("Rest wavelength (Angstrom)")
     axes[1].set_ylabel("Normalized flux")
@@ -2151,8 +2136,7 @@ def plot_line_check(
         f"v={_format_value_with_uncertainty(result.get('velocity_kms'), result.get('velocity_err_kms'), value_fmt='.0f', error_fmt='.0f', unit=' km/s')}, "
         f"pEW={_format_value_with_uncertainty(result.get('pEW_A'), result.get('pEW_err_A'), value_fmt='.1f', error_fmt='.1f', unit=' A')}, "
         f"FWHM={_format_value_with_uncertainty(result.get('FWHM_A'), result.get('FWHM_err_A'), value_fmt='.1f', error_fmt='.1f', unit=' A')}, "
-        f"depth={_format_value_with_uncertainty(result.get('depth'), result.get('fit_depth_err'), value_fmt='.2f', error_fmt='.2f')}, "
-        f"chi2r={result.get('fit_chi2_red', np.nan):.2f}"
+        f"depth={_format_value_with_uncertainty(result.get('depth'), result.get('fit_depth_err'), value_fmt='.2f', error_fmt='.2f')}"
     )
     axes[1].text(
         0.02,

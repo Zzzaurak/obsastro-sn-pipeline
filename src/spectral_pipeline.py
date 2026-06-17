@@ -263,32 +263,113 @@ def estimate_pew_uncertainty(
     return float(err) if np.isfinite(err) and err > 0 else np.nan
 
 
-def gaussian_absorption_model(
-    x: np.ndarray | float,
-    center: float,
-    sigma: float,
+def _median_wave_spacing(wave: np.ndarray) -> float:
+    values = np.sort(np.asarray(wave, dtype=float)[np.isfinite(wave)])
+    if values.size < 2:
+        return np.nan
+    diffs = np.diff(values)
+    diffs = diffs[np.isfinite(diffs) & (diffs > 0)]
+    if diffs.size == 0:
+        return np.nan
+    return float(np.nanmedian(diffs))
+
+
+def _linear_crossing(x1: float, y1: float, x2: float, y2: float, level: float) -> float:
+    if not all(np.isfinite(v) for v in [x1, y1, x2, y2, level]) or y1 == y2:
+        return float(x2)
+    frac = (level - y1) / (y2 - y1)
+    frac = float(np.clip(frac, 0.0, 1.0))
+    return float(x1 + frac * (x2 - x1))
+
+
+def estimate_minimum_wavelength_uncertainty(
+    wave: np.ndarray,
+    norm: np.ndarray,
+    min_index: int,
+    *,
+    noise_sigma: float = np.nan,
+) -> float:
+    """Conservative uncertainty for a trough minimum selected from sampled data."""
+    spacing = _median_wave_spacing(wave)
+    floor = 0.5 * spacing if np.isfinite(spacing) and spacing > 0 else np.nan
+    if not np.isfinite(noise_sigma) or noise_sigma <= 0:
+        return float(floor) if np.isfinite(floor) and floor > 0 else np.nan
+
+    wave = np.asarray(wave, dtype=float)
+    norm = np.asarray(norm, dtype=float)
+    if min_index < 0 or min_index >= wave.size or not np.isfinite(norm[min_index]):
+        return float(floor) if np.isfinite(floor) and floor > 0 else np.nan
+
+    threshold = norm[min_index] + noise_sigma
+    active = np.isfinite(norm) & (norm <= threshold)
+    if not active[min_index]:
+        return float(floor) if np.isfinite(floor) and floor > 0 else np.nan
+
+    left = int(min_index)
+    while left > 0 and active[left - 1]:
+        left -= 1
+    right = int(min_index)
+    while right < active.size - 1 and active[right + 1]:
+        right += 1
+
+    half_span = 0.5 * abs(float(wave[right]) - float(wave[left]))
+    candidates = [value for value in [floor, half_span] if np.isfinite(value) and value > 0]
+    return float(max(candidates)) if candidates else np.nan
+
+
+def estimate_half_depth_width(
+    wave: np.ndarray,
+    norm: np.ndarray,
+    min_index: int,
     depth: float,
-    baseline: float,
-    slope: float,
-    rest: float,
-    half_width: float,
-) -> np.ndarray:
-    x = np.asarray(x, dtype=float)
-    scale = float(half_width) if np.isfinite(half_width) and float(half_width) != 0 else 1.0
-    return baseline + slope * ((x - rest) / scale) - depth * np.exp(-0.5 * ((x - center) / sigma) ** 2)
+) -> tuple[float, float]:
+    """Return non-parametric FWHM and a sampling uncertainty estimate."""
+    wave = np.asarray(wave, dtype=float)
+    norm = np.asarray(norm, dtype=float)
+    spacing = _median_wave_spacing(wave)
+    width_err = 2.0 * spacing if np.isfinite(spacing) and spacing > 0 else np.nan
+    if min_index < 0 or min_index >= wave.size or not np.isfinite(depth) or depth <= 0:
+        return np.nan, width_err
+
+    half_level = 1.0 - 0.5 * depth
+    if not np.isfinite(half_level) or norm[min_index] > half_level:
+        return np.nan, width_err
+
+    left = int(min_index)
+    while left > 0 and np.isfinite(norm[left - 1]) and norm[left - 1] <= half_level:
+        left -= 1
+    if left == 0:
+        left_cross = float(wave[left])
+    else:
+        left_cross = _linear_crossing(wave[left - 1], norm[left - 1], wave[left], norm[left], half_level)
+
+    right = int(min_index)
+    while right < norm.size - 1 and np.isfinite(norm[right + 1]) and norm[right + 1] <= half_level:
+        right += 1
+    if right == norm.size - 1:
+        right_cross = float(wave[right])
+    else:
+        right_cross = _linear_crossing(wave[right], norm[right], wave[right + 1], norm[right + 1], half_level)
+
+    width = right_cross - left_cross
+    if not np.isfinite(width) or width <= 0:
+        return np.nan, width_err
+    return float(width), float(width_err) if np.isfinite(width_err) and width_err > 0 else np.nan
 
 
-def fit_normalized_absorption_line(
+def measure_normalized_absorption_minimum(
     wave: np.ndarray,
     norm: np.ndarray,
     rest: float,
     half_width: float,
     *,
     blue_only: bool = True,
+    noise_proxy: np.ndarray | None = None,
 ) -> dict[str, object]:
+    """Measure an absorption trough from the minimum of the normalized profile."""
     base = {
-        "fit_method": "gaussian_absorption",
-        "status": "fit failed: insufficient valid points",
+        "fit_method": "minimum_absorption",
+        "status": "minimum failed: insufficient valid points",
         "fit_norm": None,
         "fit_params": None,
         "fit_errors": None,
@@ -300,6 +381,8 @@ def fit_normalized_absorption_line(
         "fit_depth_err": np.nan,
         "fit_baseline": np.nan,
         "fit_slope": np.nan,
+        "fwhm_A": np.nan,
+        "fwhm_err_A": np.nan,
         "extrema_wave_A": np.nan,
         "extrema_depth": np.nan,
     }
@@ -307,132 +390,76 @@ def fit_normalized_absorption_line(
     wave = np.asarray(wave, dtype=float)
     norm = np.asarray(norm, dtype=float)
     valid = np.isfinite(wave) & np.isfinite(norm)
-    if valid.sum() < 12:
+    if valid.sum() < 5:
         return base
 
     wave = wave[valid]
     norm = norm[valid]
+    order = np.argsort(wave)
+    wave = wave[order]
+    norm = norm[order]
+    if noise_proxy is not None:
+        proxy = np.asarray(noise_proxy, dtype=float)
+        proxy = proxy[valid][order] if proxy.shape == valid.shape else proxy
+        noise_sigma = _robust_scale(proxy[np.isfinite(proxy)])
+    else:
+        noise_sigma = _robust_scale(np.diff(norm, prepend=norm[0]))
+
+    if not np.isfinite(half_width) or half_width <= 5.0:
+        base["status"] = "minimum failed: invalid half_width"
+        return base
+
     search = wave < rest if blue_only else np.isfinite(wave)
     if search.sum() < 5:
         search = np.isfinite(wave)
     candidates = np.where(search)[0]
     if candidates.size == 0:
-        base["status"] = "fit failed: no candidate absorption trough"
+        base["status"] = "minimum failed: no candidate absorption trough"
         return base
 
-    min_i = candidates[np.nanargmin(norm[candidates])]
-    extrema_wave = float(wave[min_i])
-    extrema_depth = max(0.0, 1.0 - float(norm[min_i]))
-    base["extrema_wave_A"] = extrema_wave
-    base["extrema_depth"] = extrema_depth
-
-    if not np.isfinite(half_width) or half_width <= 5.0:
-        base["status"] = "fit failed: invalid half_width"
-        return base
-    if extrema_depth < 0.01:
-        base["status"] = "fit failed: no absorption trough below continuum"
+    min_i = int(candidates[np.nanargmin(norm[candidates])])
+    minimum_wave = float(wave[min_i])
+    depth = max(0.0, 1.0 - float(norm[min_i]))
+    base["extrema_wave_A"] = minimum_wave
+    base["extrema_depth"] = depth
+    if depth < 0.01:
+        base["status"] = "minimum failed: no absorption trough below continuum"
         return base
 
-    center0 = extrema_wave
-    depth0 = float(np.clip(max(extrema_depth, 0.05), 0.05, 1.5))
-    fit_half_width = float(min(half_width, max(60.0, 0.55 * half_width)))
-    fit_mask = np.isfinite(wave) & np.isfinite(norm) & (np.abs(wave - center0) <= fit_half_width)
-    if fit_mask.sum() < 12:
-        base["status"] = "fit failed: insufficient points around absorption trough"
-        return base
-
-    fit_wave = wave[fit_mask]
-    fit_norm = norm[fit_mask]
-    half_level = 1.0 - depth0 / 2.0
-    below = fit_wave[fit_norm <= half_level]
-    if below.size >= 2:
-        sigma_guess = (float(np.nanmax(below)) - float(np.nanmin(below))) / 2.35482
-    else:
-        sigma_guess = fit_half_width / 5.0
-    sigma_upper = float(min(half_width, max(20.0, fit_half_width)))
-    sigma0 = float(np.clip(max(sigma_guess, 8.0), 5.0, sigma_upper))
-    baseline0 = float(np.clip(np.nanmedian(fit_norm), 0.5, 1.5))
-    slope0 = 0.0
-
-    line_center_lower = rest - half_width
-    line_center_upper = rest if blue_only else rest + half_width
-    center_pad = float(max(20.0, min(0.25 * half_width, 0.50 * fit_half_width, 120.0)))
-    center_lower = max(line_center_lower, center0 - center_pad)
-    center_upper = min(line_center_upper, center0 + center_pad)
-    if center_lower >= center_upper:
-        base["status"] = "fit failed: invalid center bounds"
-        return base
-
-    model = lambda x, center, sigma, depth, baseline, slope: gaussian_absorption_model(  # noqa: E731
-        x,
-        center,
-        sigma,
-        depth,
-        baseline,
-        slope,
-        rest,
-        half_width,
-    )
-
-    try:
-        params, cov = curve_fit(
-            model,
-            fit_wave,
-            fit_norm,
-            p0=(center0, sigma0, depth0, baseline0, slope0),
-            bounds=(
-                [center_lower, 5.0, 0.0, 0.5, -0.35],
-                [center_upper, sigma_upper, 1.5, 1.5, 0.35],
-            ),
-            maxfev=20000,
-        )
-    except Exception as exc:
-        base["status"] = f"fit failed: {exc}"
-        return base
-
-    errors = np.sqrt(np.clip(np.diag(cov), 0.0, np.inf)) if cov is not None else np.full(5, np.nan)
-    if errors.shape[0] != 5:
-        errors = np.full(5, np.nan)
-
-    if params[0] <= center_lower + 0.5 or params[0] >= center_upper - 0.5:
-        base["status"] = "fit failed: center hit fit bound"
-        return base
-    if params[2] < 0.02:
-        base["status"] = "fit failed: fitted absorption is too shallow"
-        return base
-
-    fit_curve = model(wave, *params)
-    fit_params = {
-        "center_A": float(params[0]),
-        "sigma_A": float(params[1]),
-        "depth": float(params[2]),
-        "baseline": float(params[3]),
-        "slope": float(params[4]),
-    }
-    fit_errors = {
-        "center_err_A": float(errors[0]) if np.isfinite(errors[0]) else np.nan,
-        "sigma_err_A": float(errors[1]) if np.isfinite(errors[1]) else np.nan,
-        "depth_err": float(errors[2]) if np.isfinite(errors[2]) else np.nan,
-        "baseline_err": float(errors[3]) if np.isfinite(errors[3]) else np.nan,
-        "slope_err": float(errors[4]) if np.isfinite(errors[4]) else np.nan,
-    }
+    center_err = estimate_minimum_wavelength_uncertainty(wave, norm, min_i, noise_sigma=noise_sigma)
+    fwhm, fwhm_err = estimate_half_depth_width(wave, norm, min_i, depth)
+    depth_err = float(noise_sigma) if np.isfinite(noise_sigma) and noise_sigma > 0 else np.nan
     base.update(
         {
             "status": "ok",
-            "fit_norm": fit_curve,
-            "fit_params": fit_params,
-            "fit_errors": fit_errors,
-            "fit_center_A": fit_params["center_A"],
-            "fit_center_err_A": fit_errors["center_err_A"],
-            "fit_sigma_A": fit_params["sigma_A"],
-            "fit_sigma_err_A": fit_errors["sigma_err_A"],
-            "fit_depth": fit_params["depth"],
-            "fit_depth_err": fit_errors["depth_err"],
-            "fit_baseline": fit_params["baseline"],
-            "fit_slope": fit_params["slope"],
+            "fit_center_A": minimum_wave,
+            "fit_center_err_A": center_err,
+            "fit_depth": depth,
+            "fit_depth_err": depth_err,
+            "fwhm_A": fwhm,
+            "fwhm_err_A": fwhm_err,
         }
     )
     return base
+
+
+def fit_normalized_absorption_line(
+    wave: np.ndarray,
+    norm: np.ndarray,
+    rest: float,
+    half_width: float,
+    *,
+    blue_only: bool = True,
+    noise_proxy: np.ndarray | None = None,
+) -> dict[str, object]:
+    return measure_normalized_absorption_minimum(
+        wave,
+        norm,
+        rest,
+        half_width,
+        blue_only=blue_only,
+        noise_proxy=noise_proxy,
+    )
 
 
 def estimate_reduced_chi2(
@@ -479,13 +506,15 @@ def format_absorption_line_result(
     fit_chi2_red: float = np.nan,
 ) -> dict[str, object]:
     status = str(fit.get("status", "fit failed: unknown"))
-    fit_method = str(fit.get("fit_method", "gaussian_absorption"))
+    fit_method = str(fit.get("fit_method", "minimum_absorption"))
     center = parse_float(fit.get("fit_center_A"))
     center_err = parse_float(fit.get("fit_center_err_A"))
     sigma = parse_float(fit.get("fit_sigma_A"))
     sigma_err = parse_float(fit.get("fit_sigma_err_A"))
     depth = parse_float(fit.get("fit_depth", fit.get("fit_depth_A")))
     depth_err = parse_float(fit.get("fit_depth_err"))
+    fwhm_direct = parse_float(fit.get("fwhm_A"))
+    fwhm_direct_err = parse_float(fit.get("fwhm_err_A"))
     extrema_wave = parse_float(fit.get("extrema_wave_A"))
     extrema_depth = parse_float(fit.get("extrema_depth"))
 
@@ -504,8 +533,8 @@ def format_absorption_line_result(
         abs_wave = float(center)
         velocity = C_KMS * (line["rest"] - abs_wave) / line["rest"]
         velocity_err = C_KMS * center_err / line["rest"] if np.isfinite(center_err) else np.nan
-        fwhm = 2.35482 * sigma if np.isfinite(sigma) else np.nan
-        fwhm_err = 2.35482 * sigma_err if np.isfinite(sigma_err) else np.nan
+        fwhm = fwhm_direct if np.isfinite(fwhm_direct) else (2.35482 * sigma if np.isfinite(sigma) else np.nan)
+        fwhm_err = fwhm_direct_err if np.isfinite(fwhm_direct_err) else (2.35482 * sigma_err if np.isfinite(sigma_err) else np.nan)
 
     return {
         "line": line_key,
@@ -544,7 +573,7 @@ def measure_absorption_line(
         return format_absorption_line_result(
             line_key,
             line,
-            {"status": "outside wavelength range", "fit_method": "gaussian_absorption"},
+            {"status": "outside wavelength range", "fit_method": "minimum_absorption"},
             pEW_A=np.nan,
         )
 
@@ -557,7 +586,7 @@ def measure_absorption_line(
         return format_absorption_line_result(
             line_key,
             line,
-            {"status": "bad local continuum", "fit_method": "gaussian_absorption"},
+            {"status": "bad local continuum", "fit_method": "minimum_absorption"},
             pEW_A=np.nan,
         )
 
@@ -568,9 +597,15 @@ def measure_absorption_line(
     absorption = np.clip(1.0 - norm, 0.0, None)
     pew = float(np.trapz(absorption, wave))
     pew_err = estimate_pew_uncertainty(wave, norm, noise_proxy=raw_norm - norm, integration_mask=absorption > 0)
-    fit = fit_normalized_absorption_line(wave, norm, rest, half_width, blue_only=line.get("blue_only", True))
-    chi2 = estimate_reduced_chi2(norm, fit.get("fit_norm"), noise_proxy=raw_norm - norm)
-    return format_absorption_line_result(line_key, line, fit, pEW_A=pew, pEW_err_A=pew_err, fit_chi2_red=chi2)
+    fit = fit_normalized_absorption_line(
+        wave,
+        norm,
+        rest,
+        half_width,
+        blue_only=line.get("blue_only", True),
+        noise_proxy=raw_norm - norm,
+    )
+    return format_absorption_line_result(line_key, line, fit, pEW_A=pew, pEW_err_A=pew_err)
 
 
 def planck_lambda_angstrom(wave_a: np.ndarray, temperature: float, amplitude: float) -> np.ndarray:
@@ -859,7 +894,7 @@ def quality_flag_lines(line_df: pd.DataFrame) -> pd.DataFrame:
             if not np.isfinite(velocity) or velocity < 1000 or velocity > 26000:
                 notes.append("velocity outside conservative sparse-spectrum range")
             if np.isfinite(fwhm) and (fwhm < 20 or fwhm > 520):
-                notes.append("FWHM is suspicious for Gaussian fit")
+                notes.append("FWHM is suspicious for minimum-trough width")
             if not np.isfinite(depth) or depth < 0.05:
                 notes.append("line depth is weak")
             if not np.isfinite(pew) or pew <= 0:

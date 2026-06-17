@@ -126,7 +126,7 @@ sn-pipline/
 |---|---|---|
 | `fetch_target_params.py` | 原有 | 读取 `configs/sn_parameter.json`，调用主观测流水线，获取 TNS 目标信息，计算观测窗口，生成观测报告和找星图。等价入口：`python -m src.pipeline`。 |
 | `fetch_aux_data.py` | 原有 | 读取 `.env` 和配置，下载 Lasair/ZTF 光变曲线与 WISeREP 光谱，保存 CSV、图片和清洁 `.dat` 光谱。等价入口：`python -m src.fetch_aux_data`。 |
-| `build_analysis_products.py` | 新增 | 调用 `src.spectral_pipeline.build_all()`，批量读取 `data/SN*/` 的一维 FITS 光谱，生成目标状态、谱线速度、pEW/FWHM、黑体颜色温度、宿主线指标和质检标记。 |
+| `build_analysis_products.py` | 新增 | 调用 `src.spectral_pipeline.build_all()`，批量读取 `data/SN*/` 的一维 FITS 光谱，生成目标状态、最低点谱线速度、pEW/非参数 FWHM、黑体颜色温度、宿主线指标和质检标记。 |
 | `build_presentation_figures.py` | 新增 | 从 `output/analysis_pipeline/figures/` 复制或重组 slides 需要的图，写到 `ppt/figures/`；读取目标状态时会兼容 `SN2026KID_target_status.csv` 这类逐目标调参产物。 |
 | `download_tardis_atom_data.py` | 原有 | 首次运行 TARDIS 前把 TARDIS 内部数据目录配置到当前项目 `data/`，并下载或复用 `kurucz_cd23_chianti_H_He_latest.h5`。 |
 | `download_tardis_model_resources.py` | 新增 | 把 `configs/tardis/model_resources.yml` 中声明的 TARDIS 包内置模型资源复制到 `data/tardis_models/`；当前主要是 Ia CSVY 分层密度/丰度示例和格式样例。 |
@@ -138,7 +138,7 @@ sn-pipline/
 |---|---|
 | `src/pipeline.py` | 主观测流水线：配置加载、TNS 公共目录查询、页面抓取、观测窗口、报告和找星图。 |
 | `src/fetch_aux_data.py` | 辅助数据流水线：协调 Lasair 光变曲线和 WISeREP 光谱下载。 |
-| `src/spectral_pipeline.py` | 当前主分析模块：批量光谱读取、静止系修正、稀疏光谱诊断、质检表和报告图。 |
+| `src/spectral_pipeline.py` | 当前主分析模块：批量光谱读取、静止系修正、吸收线最低点测量、稀疏光谱诊断、质检表和报告图。 |
 | `src/lasair.py` | Lasair API 访问、光变曲线 CSV 保存和绘图。 |
 | `src/wiserep.py` | WISeREP 光谱搜索、下载、清洁 `.dat` 输出和绘图。 |
 | `src/finder.py` | astroquery SkyView 找星图生成。 |
@@ -152,7 +152,7 @@ sn-pipline/
 | Notebook | 用途 |
 |---|---|
 | `01_data_collection_and_observing.ipynb` | 目标获取、观测准备、TNS/Lasair/WISeREP 输出盘点。 |
-| `02_spectral_analysis_pipeline.ipynb` | 主光谱分析和手动调参入口：FITS 读取、TNS 公共目录红移、自动选线、速度、pEW/FWHM、黑体温度、宿主线指标和质检标记；只在“单条谱线局部检查图”里保留本地吸收线微调，可用 `CHECK_LINE_KEY=None` + `CHECK_LINE_INDEX` 选择关键线。`SAVE_PRODUCTS/SAVE_FIGURES=True` 时默认写出带目标名前缀的产物。该 notebook 直接编辑维护，不再依赖生成脚本。 |
+| `02_spectral_analysis_pipeline.ipynb` | 主光谱分析和手动调参入口：FITS 读取、TNS 公共目录红移、自动选线、基于吸收最低点的速度、pEW/非参数 FWHM、黑体温度、宿主线指标和质检标记；只在“单条谱线局部检查图”里保留本地吸收线微调，可用 `CHECK_LINE_KEY=None` + `CHECK_LINE_INDEX` 选择关键线。`SAVE_PRODUCTS/SAVE_FIGURES=True` 时默认写出带目标名前缀的产物。该 notebook 直接编辑维护，不再依赖生成脚本。 |
 | `03_tardis_modeling_optional.ipynb` | 可选 TARDIS 配置与模拟入口；从本地 FITS 和 02 的分析产物估计起始参数，不依赖 legacy notebook 或遗留数据。 |
 | `04_project_report.ipynb` | 中文报告 notebook，汇总科学问题、数据、分析、解释和结论。 |
 
