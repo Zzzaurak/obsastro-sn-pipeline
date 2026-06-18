@@ -58,6 +58,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="run only CSVY model-resource candidates; implies --include-model-resources",
     )
     parser.add_argument(
+        "--physics-preset",
+        choices=["current", "literature", "both"],
+        default="current",
+        help="analytic-candidate plasma preset: current LTE baseline, literature photospheric preset, or both",
+    )
+    parser.add_argument(
         "--luminosity-offsets",
         type=parse_float_list,
         default=[0.0, -0.35, 0.35],
@@ -87,6 +93,16 @@ def tuning_target_dir(project_root: Path, target: str, run_label: str = "") -> P
     suffix = safe_label(run_label)
     name = target if not suffix else f"{target}__{suffix}"
     return project_root / "output" / "tardis_tuning" / name
+
+
+def physics_presets_from_arg(value: str) -> list[str]:
+    if value == "current":
+        return ["current_lte"]
+    if value == "literature":
+        return ["literature_photospheric"]
+    if value == "both":
+        return ["current_lte", "literature_photospheric"]
+    raise ValueError(f"unsupported physics preset selection: {value}")
 
 
 def selected_epoch_days(context: dict[str, object]) -> float:
@@ -234,6 +250,7 @@ def row_for_candidate(
         "v_stop_kms": candidate.v_stop_kms,
         "density_profile": candidate.density_profile,
         "abundance_preset": candidate.abundance_preset,
+        "physics_preset": candidate.physics_preset,
         "model_resource": candidate.model_resource or "",
         "config_path": str(config_path),
         "spectrum_path": str(spectrum_path),
@@ -255,6 +272,7 @@ def run_target(
     luminosity_offsets: list[float],
     epoch_offsets: list[float],
     velocity_scales: list[float],
+    physics_presets: list[str],
     include_model_resources: bool,
     model_resource_only: bool,
     run_label: str,
@@ -276,6 +294,7 @@ def run_target(
         velocity_scales=velocity_scales,
         abundance_presets=[] if model_resource_only else None,
         density_profiles=[] if model_resource_only else None,
+        physics_presets=[] if model_resource_only else physics_presets,
         model_resources=model_resources,
         max_candidates=max_candidates,
     )
@@ -286,6 +305,8 @@ def run_target(
         f"L={seed.log_lsun:.2f} t={seed.time_explosion_days:.1f} "
         f"v={seed.v_start_kms:.0f}-{seed.v_stop_kms:.0f} km/s"
     )
+    if not model_resource_only:
+        print(f"[{seed.target}] physics presets: {', '.join(physics_presets)}")
     if model_resources:
         print(f"[{seed.target}] model resources: {', '.join(model_resources)}")
     for candidate in candidates:
@@ -296,7 +317,7 @@ def run_target(
             if reuse_existing and spectrum_path.exists():
                 sim_wave, sim_flux = tt.read_spectrum(spectrum_path)
             else:
-                print(f"[{seed.target}] running {candidate.candidate_id}")
+                print(f"[{seed.target}] running {candidate.candidate_id} ({candidate.physics_preset})")
                 sim_wave, sim_flux = run_tardis_config(config_path)
                 tt.save_spectrum(spectrum_path, sim_wave, sim_flux)
             score = score_and_plot_candidate(
@@ -358,7 +379,7 @@ def run_target(
     summary = dict(best)
     summary.update({key: str(value) for key, value in shutil_paths.items()})
     tt.write_best_summary(summary_path, summary)
-    print(f"[{seed.target}] best={best['candidate_id']} score={float(best['total_score']):.3f}")
+    print(f"[{seed.target}] best={best['candidate_id']} score={float(best['total_score']):.3f} physics={best.get('physics_preset', '')}")
 
     if adopt_best:
         adopted = tt.copy_best_outputs(
@@ -380,6 +401,7 @@ def main(argv: list[str] | None = None) -> int:
     apply_runtime_environment(acceleration)
     nthreads = resolve_tardis_threads(acceleration.get("tardis", {}).get("nthreads", "auto"))
     targets = [tt.canonical_target(target) for target in args.target] if args.target else list(tt.DEFAULT_TARGETS)
+    physics_presets = physics_presets_from_arg(args.physics_preset)
     summaries = []
     for target in targets:
         summaries.append(
@@ -395,6 +417,7 @@ def main(argv: list[str] | None = None) -> int:
                 luminosity_offsets=args.luminosity_offsets,
                 epoch_offsets=args.epoch_offsets,
                 velocity_scales=args.velocity_scales,
+                physics_presets=physics_presets,
                 include_model_resources=args.include_model_resources,
                 model_resource_only=args.model_resource_only,
                 run_label=args.run_label,
@@ -408,6 +431,7 @@ def main(argv: list[str] | None = None) -> int:
             f"L={float(summary['log_lsun']):.2f} "
             f"t={float(summary['time_explosion_days']):.1f} "
             f"v={float(summary['v_start_kms']):.0f}-{float(summary['v_stop_kms']):.0f} "
+            f"physics={summary.get('physics_preset', '') or 'current_lte'} "
             f"resource={summary.get('model_resource', '') or 'analytic'}"
         )
     return 0

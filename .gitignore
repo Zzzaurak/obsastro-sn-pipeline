@@ -37,7 +37,8 @@ build/
 notebooks/legacy
 
 # Python cache
-tests/
+tests/__pycache__/
+tests/test_pipeline.py
 __pycache__/
 
 # others

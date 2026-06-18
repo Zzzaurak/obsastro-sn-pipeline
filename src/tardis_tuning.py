@@ -49,6 +49,7 @@ class TardisCandidate:
     v_stop_kms: float
     density_profile: str
     abundance_preset: str
+    physics_preset: str = "current_lte"
     model_resource: str | None = None
 
 
@@ -205,6 +206,25 @@ def density_config(profile: str) -> dict[str, object]:
     raise ValueError(f"unsupported density profile: {profile}")
 
 
+def plasma_config_for_preset(preset: str) -> dict[str, object]:
+    preset = str(preset or "current_lte").strip()
+    if preset == "current_lte":
+        return {
+            "ionization": "lte",
+            "excitation": "lte",
+            "radiative_rates_type": "dilute-blackbody",
+            "line_interaction_type": "macroatom",
+        }
+    if preset == "literature_photospheric":
+        return {
+            "ionization": "nebular",
+            "excitation": "dilute-lte",
+            "radiative_rates_type": "dilute-blackbody",
+            "line_interaction_type": "macroatom",
+        }
+    raise ValueError(f"unsupported physics preset: {preset}")
+
+
 def abundance_config(preset: str) -> dict[str, object]:
     key = str(preset or "").strip()
     if key not in ABUNDANCE_PRESETS:
@@ -250,12 +270,16 @@ def generate_candidates(
     velocity_scales: Sequence[float] = (0.85, 1.0, 1.15),
     abundance_presets: Sequence[str] | None = None,
     density_profiles: Sequence[str] | None = None,
+    physics_presets: Sequence[str] | None = None,
     model_resources: Sequence[str] | None = None,
     max_candidates: int | None = None,
 ) -> list[TardisCandidate]:
     target = canonical_target(seed.target)
     abundance_presets = list(abundance_presets_for_family(seed.sn_family) if abundance_presets is None else abundance_presets)
     density_profiles = list(density_profiles_for_family(seed.sn_family) if density_profiles is None else density_profiles)
+    physics_presets = list(["current_lte"] if physics_presets is None else physics_presets)
+    for preset in physics_presets:
+        plasma_config_for_preset(preset)
     candidates: list[TardisCandidate] = []
     limit = math.inf if max_candidates is None else max(0, int(max_candidates))
     for lum_offset in luminosity_offsets:
@@ -263,23 +287,25 @@ def generate_candidates(
             for epoch_offset in epoch_offsets:
                 for density_profile in density_profiles:
                     for abundance_preset in abundance_presets:
-                        if len(candidates) >= limit:
-                            return candidates
                         v_start = max(2500.0, float(seed.v_start_kms) * float(velocity_scale))
                         v_stop = max(v_start + 1500.0, float(seed.v_stop_kms) * float(velocity_scale))
-                        candidates.append(
-                            TardisCandidate(
-                                target=target,
-                                candidate_id=f"{target}_c{len(candidates):03d}",
-                                sn_family=seed.sn_family,
-                                log_lsun=round(float(seed.log_lsun) + float(lum_offset), 4),
-                                time_explosion_days=max(3.0, round(float(seed.time_explosion_days) + float(epoch_offset), 4)),
-                                v_start_kms=round(v_start, 4),
-                                v_stop_kms=round(v_stop, 4),
-                                density_profile=str(density_profile),
-                                abundance_preset=str(abundance_preset),
+                        for physics_preset in physics_presets:
+                            if len(candidates) >= limit:
+                                return candidates
+                            candidates.append(
+                                TardisCandidate(
+                                    target=target,
+                                    candidate_id=f"{target}_c{len(candidates):03d}",
+                                    sn_family=seed.sn_family,
+                                    log_lsun=round(float(seed.log_lsun) + float(lum_offset), 4),
+                                    time_explosion_days=max(3.0, round(float(seed.time_explosion_days) + float(epoch_offset), 4)),
+                                    v_start_kms=round(v_start, 4),
+                                    v_stop_kms=round(v_stop, 4),
+                                    density_profile=str(density_profile),
+                                    abundance_preset=str(abundance_preset),
+                                    physics_preset=str(physics_preset),
+                                )
                             )
-                        )
     for lum_offset in luminosity_offsets:
         for epoch_offset in epoch_offsets:
             for model_resource in model_resources or ():
@@ -298,6 +324,7 @@ def generate_candidates(
                         v_stop_kms=round(float(seed.v_stop_kms), 4),
                         density_profile="csvy_model",
                         abundance_preset=resource,
+                        physics_preset="current_lte",
                         model_resource=resource,
                     )
                 )
@@ -345,12 +372,7 @@ def build_tardis_config(
             "time_explosion": f"{candidate.time_explosion_days:.1f} day",
         },
         "atom_data": str((root / "data" / ATOM_DATA_FILE).resolve()),
-        "plasma": {
-            "ionization": "lte",
-            "excitation": "lte",
-            "radiative_rates_type": "dilute-blackbody",
-            "line_interaction_type": "macroatom",
-        },
+        "plasma": plasma_config_for_preset(candidate.physics_preset),
         "montecarlo": montecarlo_config(packet_scale, nthreads=nthreads),
         "spectrum": {
             "start": "500 angstrom",
@@ -513,7 +535,8 @@ def plot_comparison(
     axes[0].set_title(
         f"{target} {candidate.candidate_id}: score={score.total_score:.3f}, "
         f"L={candidate.log_lsun:.2f}, t={candidate.time_explosion_days:.1f} d, "
-        f"v={candidate.v_start_kms:.0f}-{candidate.v_stop_kms:.0f} km/s"
+        f"v={candidate.v_start_kms:.0f}-{candidate.v_stop_kms:.0f} km/s, "
+        f"physics={candidate.physics_preset}"
     )
     axes[0].legend(fontsize=8, loc="upper right")
     axes[0].grid(alpha=0.25)

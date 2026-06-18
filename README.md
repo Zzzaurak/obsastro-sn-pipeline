@@ -68,6 +68,8 @@ WISEREP_API_KEY=
 
 观测数据以 `data/<观测目标>/*` 的格式存放
 
+当前 `data/tns_public_objects.csv` 只有发现日期 `discoverydate`，没有最大光或峰值日期字段。因此本项目的 `phase_days` 仍定义为“观测日期 - TNS 发现日期”，不是相对最大光相位。由于本批数据缺少可靠光变曲线约束，且 Superfit 相位结果不稳定，报告中不要把这里的 phase 当作 maximum-light phase。
+
 ## 当前主流程
 
 ```bash
@@ -126,11 +128,11 @@ sn-pipline/
 |---|---|---|
 | `fetch_target_params.py` | 原有 | 读取 `configs/sn_parameter.json`，调用主观测流水线，获取 TNS 目标信息，计算观测窗口，生成观测报告和找星图。等价入口：`python -m src.pipeline`。 |
 | `fetch_aux_data.py` | 原有 | 读取 `.env` 和配置，下载 Lasair/ZTF 光变曲线与 WISeREP 光谱，保存 CSV、图片和清洁 `.dat` 光谱。等价入口：`python -m src.fetch_aux_data`。 |
-| `build_analysis_products.py` | 新增 | 调用 `src.spectral_pipeline.build_all()`，批量读取 `data/SN*/` 的一维 FITS 光谱，生成目标状态、最低点谱线速度、pEW/非参数 FWHM、黑体颜色温度、宿主线指标和质检标记。 |
+| `build_analysis_products.py` | 新增 | 调用 `src.spectral_pipeline.build_all()`，批量读取 `data/SN*/` 的一维 FITS 光谱，生成目标状态、最低点谱线速度、pEW/非参数 FWHM、黑体颜色温度 proxy、宿主线指标和质检标记；吸收线表包含连续谱/平滑参数扰动得到的 `velocity_sys_kms`、`pEW_sys_A`、`FWHM_sys_A`。 |
 | `build_presentation_figures.py` | 新增 | 从 `output/analysis_pipeline/figures/` 复制或重组 slides 需要的图，写到 `ppt/figures/`；读取目标状态时会兼容 `SN2026KID_target_status.csv` 这类逐目标调参产物。 |
 | `download_tardis_atom_data.py` | 原有 | 首次运行 TARDIS 前把 TARDIS 内部数据目录配置到当前项目 `data/`，并下载或复用 `kurucz_cd23_chianti_H_He_latest.h5`。 |
 | `download_tardis_model_resources.py` | 新增 | 把 `configs/tardis/model_resources.yml` 中声明的 TARDIS 包内置模型资源复制到 `data/tardis_models/`；当前主要是 Ia CSVY 分层密度/丰度示例和格式样例。 |
-| `run_tardis_tuning.py` | 新增 | 批量运行有限 TARDIS 参数搜索，输出 `output/tardis_tuning/<target>/` 或带 `--run-label` 的独立探索目录；支持 `--include-model-resources` / `--model-resource-only` 测试 CSVY resources。 |
+| `run_tardis_tuning.py` | 新增 | 批量运行有限 TARDIS 参数搜索，输出 `output/tardis_tuning/<target>/` 或带 `--run-label` 的独立探索目录；支持 `--include-model-resources` / `--model-resource-only` 测试 CSVY resources，并可用 `--physics-preset current|literature|both` 比较当前 LTE baseline 和更接近文献 photospheric 假设的 `nebular/dilute-lte/macroatom` 组合。 |
 
 ## `src/` 核心模块
 
@@ -152,7 +154,7 @@ sn-pipline/
 | Notebook | 用途 |
 |---|---|
 | `01_data_collection_and_observing.ipynb` | 目标获取、观测准备、TNS/Lasair/WISeREP 输出盘点。 |
-| `02_spectral_analysis_pipeline.ipynb` | 主光谱分析和手动调参入口：FITS 读取、TNS 公共目录红移、自动选线、基于吸收最低点的速度、pEW/非参数 FWHM、黑体温度、宿主线指标和质检标记；只在“单条谱线局部检查图”里保留本地吸收线微调，可用 `CHECK_LINE_KEY=None` + `CHECK_LINE_INDEX` 选择关键线。`SAVE_PRODUCTS/SAVE_FIGURES=True` 时默认写出带目标名前缀的产物。该 notebook 直接编辑维护，不再依赖生成脚本。 |
+| `02_spectral_analysis_pipeline.ipynb` | 主光谱分析和手动调参入口：FITS 读取、TNS 公共目录红移、按“距发现日天数”的相位、自动选线、基于吸收最低点的速度、pEW/非参数 FWHM、黑体颜色温度 proxy、宿主线指标和质检标记；只在“单条谱线局部检查图”里保留本地吸收线微调，可用 `CHECK_LINE_KEY=None` + `CHECK_LINE_INDEX` 选择关键线。`SAVE_PRODUCTS/SAVE_FIGURES=True` 时默认写出带目标名前缀的产物。该 notebook 直接编辑维护，不再依赖生成脚本。 |
 | `03_tardis_modeling_optional.ipynb` | 可选 TARDIS 配置与模拟入口；从本地 FITS 和 02 的分析产物估计起始参数，不依赖 legacy notebook 或遗留数据。 |
 | `04_project_report.ipynb` | 中文报告 notebook，汇总科学问题、数据、分析、解释和结论。 |
 
@@ -193,6 +195,8 @@ output/SN2026fov/
 
 `scripts/build_analysis_products.py` 生成无前缀的全量批处理产物。`02_spectral_analysis_pipeline.ipynb` 中 `OUTPUT_TAG=""` 时会自动用当前目标名作为 `RUN_TAG`；同一目标重跑会覆盖同一目标文件，但不会覆盖其他目标的文件。`01/03/04` 和展示图脚本会优先读取目标化产物，再回退到无前缀批处理产物。
 
+吸收线表中的 `phase_days` 只表示距发现日天数。`line_diagnostics_*` 中的 `rest_wave_choice` / `line_blend_note` 会标明 Ca II H&K、Ca II NIR 等混合线的代理静止波长；`velocity_sys_kms`、`pEW_sys_A`、`FWHM_sys_A` 是改变平滑窗口和连续谱边缘比例后的经验系统散布。`blackbody_temperature.csv` 的 `T_qc_flag` 会把非 Ia 或缺红移目标降为 `check`；`host_environment_summary.csv` 同时给出 detected row 数和 `unique_detected_host_lines`，后者更适合写报告。
+
 ## TARDIS 可选流程
 
 TARDIS 不作为本项目主证据链，只用于定性比较谱线位置和整体谱形。首次运行前：
@@ -224,12 +228,14 @@ python scripts/run_tardis_tuning.py --target SN2026KID --run-label analytic_refi
 - `--run-label <name>`：把探索性结果写到 `output/tardis_tuning/<TARGET>__<name>/`，避免覆盖原 adopted 搜索目录。
 - `--include-model-resources`：把 `data/tardis_models/ia/*.csvy` 追加为 Ia 候选。
 - `--model-resource-only`：只跑 CSVY model-resource 候选。
+- `--physics-preset current|literature|both`：analytic 候选默认使用当前 LTE baseline；`literature` 会生成 `nebular + dilute-lte + macroatom` 的光球近似配置；`both` 同时比较两者。CSVY model-resource 候选保留资源文件自身的 plasma 设置。
 
 截至本次调参，Ia CSVY resources 可通过 `csvy_model` 写入合法的 TARDIS 候选配置并运行；CSVY 文件本身是模型资源，不是可单独执行的 run config。它们生成的 virtual/real packet 光谱噪声较大，SN2026FVX 与 SN2026JLM 的评分和目视效果均未优于原来的 W7-like analytic 模型。SN2026KID 的 quick refinement 曾得到较低分数，但 final packet profile 复跑没有保持优势，因此最终 adopted TARDIS 结果仍以 `report/tardis_report.md` 中的 adopted 表为准。
 
 ## 注意事项
 
 - 不要提交 `.env`、`data/`、`output/` 或真实凭证。
+- 目前没有最大光日期约束；`phase_days` 只能写成 days since discovery，不要写成 phase relative to maximum light。
 - 自动谱线测量只适合作为第一版结果；正式引用速度、pEW 或 FWHM 前，应检查 `line_diagnostics_qc.csv` 或 `<RUN_TAG>_line_diagnostics_qc.csv` 中的 `qc_flag`，并人工确认 `check` 项。
 - `ppt/` 是英文最终展示；中文 notebook 和 README 是为了方便组内复现与写作。
 - 如果修改 notebook 结构，直接编辑对应 `.ipynb`，并同步更新 README、`AGENTS.md` 和 `notebooks/README.md` 里的说明。
@@ -241,7 +247,7 @@ python scripts/run_tardis_tuning.py --target SN2026KID --run-label analytic_refi
 | 优先级 | 状态 | 后续工作 | 说明 |
 |---|---|---|---|
 | 高 | 未完成 | 人工检查 `qc_flag=check` 的谱线测量 | 自动 pipeline 已输出速度、pEW、FWHM，但 `check` 项可能受噪声、天光残差、线混合或局部连续谱影响。正式报告里只应引用人工确认后的数值。 |
-| 高 | 未完成 | 为每个目标确定最终采用的类型、红移和相位 | 当前 `target_status.csv` / `<RUN_TAG>_target_status.csv` 是第一版综合表。需要结合 TNS、DASH/Superfit、谱线识别和光变曲线，确定报告中的最终值。 |
+| 高 | 未完成 | 为每个目标确定最终采用的类型、红移和可报告时间基准 | 当前 `target_status.csv` / `<RUN_TAG>_target_status.csv` 是第一版综合表。没有最大光日期时只报告距发现日天数；若后续获得可靠光变曲线，再单独新增 maximum-light phase，不要覆盖现有 `phase_days` 含义。 |
 | 高 | 未完成 | 替换 slides/report 中的 `TBD by group` 分工占位 | 需要填入真实组员姓名和贡献。 |
 | 中 | 部分完成 | 宿主星系/环境诊断 | 已有 `host_environment_lines.csv` 和 `host_environment_summary.csv`，但这些是窄线/指数级别的粗略指标。若要讨论消光或宿主环境，需要检查谱线拟合、通量定标和 Balmer decrement 的可靠性。 |
 | 中 | 部分完成 | TARDIS 建模 | `03_tardis_modeling_optional.ipynb` 与 `scripts/run_tardis_tuning.py` 已能从当前项目产物生成配置并可选运行模拟；`data/tardis_models/` 已支持 Ia CSVY resources。但当前仍不是自动物理拟合器，只能辅助 line ID 和谱形解释，不应给出强的抛射物质量、丰度或爆炸能量约束。 |

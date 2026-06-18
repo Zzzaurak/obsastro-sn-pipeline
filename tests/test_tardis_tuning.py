@@ -96,6 +96,53 @@ class TardisTuningTests(unittest.TestCase):
         self.assertIn("O", config["model"]["abundances"])
         self.assertEqual(config["montecarlo"]["iterations"], 3)
 
+    def test_build_config_can_use_literature_photospheric_plasma_preset(self) -> None:
+        candidate = tt.TardisCandidate(
+            target="SN2026FVX",
+            candidate_id="SN2026FVX_c000",
+            sn_family="Ia",
+            log_lsun=9.4,
+            time_explosion_days=20.0,
+            v_start_kms=5000.0,
+            v_stop_kms=15000.0,
+            density_profile="branch85_w7",
+            abundance_preset="ia_standard",
+            physics_preset="literature_photospheric",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "data").mkdir()
+            config = tt.build_tardis_config(candidate, project_root=root, packet_scale="quick")
+
+        self.assertEqual(config["plasma"]["ionization"], "nebular")
+        self.assertEqual(config["plasma"]["excitation"], "dilute-lte")
+        self.assertEqual(config["plasma"]["line_interaction_type"], "macroatom")
+
+    def test_generate_candidates_can_include_literature_physics_variant(self) -> None:
+        seed = tt.TargetSeed(
+            target="SN2026FVX",
+            sn_type="SN Ia",
+            sn_family="Ia",
+            z=0.02,
+            spectrum_file="data/SN2026FVX/spec.fits",
+            log_lsun=9.4,
+            time_explosion_days=24.0,
+            v_start_kms=5000.0,
+            v_stop_kms=16000.0,
+        )
+
+        candidates = tt.generate_candidates(
+            seed,
+            luminosity_offsets=[0.0],
+            epoch_offsets=[0.0],
+            velocity_scales=[1.0],
+            abundance_presets=["ia_standard"],
+            density_profiles=["branch85_w7"],
+            physics_presets=["current_lte", "literature_photospheric"],
+        )
+
+        self.assertEqual([candidate.physics_preset for candidate in candidates], ["current_lte", "literature_photospheric"])
+
     def test_model_resource_candidate_builds_csvy_config(self) -> None:
         candidate = tt.TardisCandidate(
             target="SN2026FVX",

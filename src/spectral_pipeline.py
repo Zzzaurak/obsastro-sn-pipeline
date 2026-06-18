@@ -36,7 +36,13 @@ LINE_LIBRARY = {
     "SiII5972": {"rest": 5972.0, "label": "Si II 5972", "blue_only": True},
     "CII6580": {"rest": 6580.0, "label": "C II 6580", "blue_only": True},
     "CII7234": {"rest": 7234.0, "label": "C II 7234", "blue_only": True},
-    "CaIIHK": {"rest": 3933.7, "label": "Ca II H&K / K", "blue_only": True},
+    "CaIIHK": {
+        "rest": 3933.7,
+        "label": "Ca II H&K / K",
+        "blue_only": True,
+        "rest_wave_choice": "blend_proxy",
+        "line_blend_note": "Ca II H&K blend proxy using Ca II K 3933.7 A; compare with literature as a blended feature.",
+    },
     "SII5640": {"rest": 5640.0, "label": "S II W", "blue_only": False},
     "Halpha": {"rest": 6562.8, "label": "H alpha", "blue_only": True},
     "Hbeta": {"rest": 4861.3, "label": "H beta", "blue_only": True},
@@ -49,7 +55,13 @@ LINE_LIBRARY = {
     "HeI6678": {"rest": 6678.2, "label": "He I 6678", "blue_only": True},
     "HeI7065": {"rest": 7065.2, "label": "He I 7065", "blue_only": True},
     "OI7774": {"rest": 7774.0, "label": "O I 7774", "blue_only": True},
-    "CaIINIR": {"rest": 8579.0, "label": "Ca II NIR triplet", "blue_only": True},
+    "CaIINIR": {
+        "rest": 8579.0,
+        "label": "Ca II NIR triplet",
+        "blue_only": True,
+        "rest_wave_choice": "blend_proxy",
+        "line_blend_note": "Ca II NIR triplet blend proxy using 8579 A effective wavelength; compare with literature as a blended feature.",
+    },
 }
 
 HOST_LINES = {
@@ -65,10 +77,10 @@ HOST_LINES = {
 }
 
 PRIMARY_LINES_BY_TYPE = {
-    "ia": {"SiII6355", "SiII5972", "CaIIHK"},
-    "ii": {"Halpha", "Hbeta", "FeII5169"},
+    "ia": {"SiII6355", "CaIIHK"},
+    "ii": {"FeII5169"},
     "iin": {"Halpha", "Hbeta"},
-    "iib": {"Halpha", "HeI5876", "FeII5169"},
+    "iib": {"FeII5169"},
     "ib": {"HeI5876", "HeI6678", "HeI7065"},
     "ic": {"OI7774", "CaIIHK", "CaIINIR"},
     "icbl": {"OI7774", "CaIIHK", "CaIINIR", "FeII5169"},
@@ -504,6 +516,10 @@ def format_absorption_line_result(
     pEW_A: float,
     pEW_err_A: float = np.nan,
     fit_chi2_red: float = np.nan,
+    velocity_sys_kms: float = np.nan,
+    pEW_sys_A: float = np.nan,
+    FWHM_sys_A: float = np.nan,
+    n_systematic_variants: int = 0,
 ) -> dict[str, object]:
     status = str(fit.get("status", "fit failed: unknown"))
     fit_method = str(fit.get("fit_method", "minimum_absorption"))
@@ -540,14 +556,20 @@ def format_absorption_line_result(
         "line": line_key,
         "line_label": line["label"],
         "rest_wave": line["rest"],
+        "rest_wave_choice": str(line.get("rest_wave_choice", "single_line")),
+        "line_blend_note": str(line.get("line_blend_note", "")),
         "fit_method": fit_method,
         "abs_wave": abs_wave,
         "velocity_kms": float(velocity) if np.isfinite(velocity) else np.nan,
         "velocity_err_kms": float(velocity_err) if np.isfinite(velocity_err) else np.nan,
+        "velocity_sys_kms": float(velocity_sys_kms) if np.isfinite(velocity_sys_kms) else np.nan,
         "pEW_A": float(pEW_A),
         "pEW_err_A": float(pEW_err_A) if np.isfinite(pEW_err_A) else np.nan,
+        "pEW_sys_A": float(pEW_sys_A) if np.isfinite(pEW_sys_A) else np.nan,
         "FWHM_A": float(fwhm) if np.isfinite(fwhm) else np.nan,
         "FWHM_err_A": float(fwhm_err) if np.isfinite(fwhm_err) else np.nan,
+        "FWHM_sys_A": float(FWHM_sys_A) if np.isfinite(FWHM_sys_A) else np.nan,
+        "n_systematic_variants": int(n_systematic_variants),
         "depth": float(depth) if np.isfinite(depth) else np.nan,
         "fit_center_err_A": float(center_err) if np.isfinite(center_err) else np.nan,
         "fit_sigma_A": float(sigma) if np.isfinite(sigma) else np.nan,
@@ -560,11 +582,25 @@ def format_absorption_line_result(
     }
 
 
+def _systematic_spread(base_value: object, variant_values: Iterable[object]) -> float:
+    values = [parse_float(base_value)]
+    values.extend(parse_float(value) for value in variant_values)
+    finite = np.asarray([value for value in values if np.isfinite(value)], dtype=float)
+    if finite.size < 2:
+        return np.nan
+    spread = float(np.nanstd(finite, ddof=1)) if finite.size > 2 else float(0.5 * abs(finite[1] - finite[0]))
+    return spread if np.isfinite(spread) else np.nan
+
+
 def measure_absorption_line(
     wave_rest: np.ndarray,
     flux: np.ndarray,
     line_key: str,
     half_width: float = 420.0,
+    *,
+    smooth_window: int = 21,
+    edge_fraction: float = 0.18,
+    include_systematics: bool = False,
 ) -> dict[str, object]:
     line = LINE_LIBRARY[line_key]
     rest = line["rest"]
@@ -579,8 +615,8 @@ def measure_absorption_line(
 
     wave = np.asarray(wave_rest[mask], dtype=float)
     raw_flux = np.asarray(flux[mask], dtype=float)
-    smooth_flux_local = smooth_flux(raw_flux, preferred_window=21)
-    continuum = local_linear_continuum(wave, smooth_flux_local)
+    smooth_flux_local = smooth_flux(raw_flux, preferred_window=smooth_window)
+    continuum = local_linear_continuum(wave, smooth_flux_local, edge_fraction=edge_fraction)
     valid = np.isfinite(wave) & np.isfinite(raw_flux) & np.isfinite(smooth_flux_local) & np.isfinite(continuum) & (np.abs(continuum) > 0)
     if valid.sum() < 12:
         return format_absorption_line_result(
@@ -605,7 +641,28 @@ def measure_absorption_line(
         blue_only=line.get("blue_only", True),
         noise_proxy=raw_norm - norm,
     )
-    return format_absorption_line_result(line_key, line, fit, pEW_A=pew, pEW_err_A=pew_err)
+    result = format_absorption_line_result(line_key, line, fit, pEW_A=pew, pEW_err_A=pew_err)
+    if include_systematics and result.get("status") == "ok":
+        variants = []
+        for variant_smooth, variant_edge in ((15, edge_fraction), (29, edge_fraction), (smooth_window, 0.12), (smooth_window, 0.24)):
+            if int(variant_smooth) == int(smooth_window) and float(variant_edge) == float(edge_fraction):
+                continue
+            variant = measure_absorption_line(
+                wave_rest,
+                flux,
+                line_key,
+                half_width=half_width,
+                smooth_window=variant_smooth,
+                edge_fraction=variant_edge,
+                include_systematics=False,
+            )
+            if variant.get("status") == "ok":
+                variants.append(variant)
+        result["velocity_sys_kms"] = _systematic_spread(result.get("velocity_kms"), [row.get("velocity_kms") for row in variants])
+        result["pEW_sys_A"] = _systematic_spread(result.get("pEW_A"), [row.get("pEW_A") for row in variants])
+        result["FWHM_sys_A"] = _systematic_spread(result.get("FWHM_A"), [row.get("FWHM_A") for row in variants])
+        result["n_systematic_variants"] = len(variants)
+    return result
 
 
 def planck_lambda_angstrom(wave_a: np.ndarray, temperature: float, amplitude: float) -> np.ndarray:
@@ -751,6 +808,24 @@ def fit_blackbody_temperature(
         return _blackbody_result(status=f"fit failed: {exc}")
 
 
+def apply_temperature_context_qc(result: dict[str, object], *, sn_type: object, z: object) -> dict[str, object]:
+    """Demote color-temperature proxy rows when context makes physical use unsafe."""
+    out = dict(result)
+    if out.get("status", "ok") != "ok":
+        return out
+    notes = [str(out.get("T_qc_note", "")).strip()]
+    z_value = parse_float(z)
+    family = canonical_sn_type(sn_type)
+    if not np.isfinite(z_value):
+        out["T_qc_flag"] = "check"
+        notes.append("missing redshift; color temperature proxy only")
+    if family != "ia":
+        out["T_qc_flag"] = "check"
+        notes.append("non-Ia continuum proxy; verify calibration before physical use")
+    out["T_qc_note"] = "; ".join(note for note in notes if note)
+    return out
+
+
 def load_spectra(project_root: Path, target_overrides: dict[str, dict[str, object]] | None = None) -> tuple[list[dict], pd.DataFrame]:
     data_dir = project_root / "data"
     metadata = load_tns_metadata(data_dir / "tns_public_objects.csv")
@@ -850,7 +925,7 @@ def measure_spectral_features(spectra: Iterable[dict]) -> tuple[pd.DataFrame, pd
     for spec in spectra:
         z = spec["z"]
         wave_rest = spec["wave"] / (1.0 + z) if np.isfinite(z) else spec["wave"].copy()
-        bb = fit_blackbody_temperature(wave_rest, spec["flux"])
+        bb = apply_temperature_context_qc(fit_blackbody_temperature(wave_rest, spec["flux"]), sn_type=spec["type"], z=z)
         base = {
             "target": spec["target"],
             "file": spec["file"],
@@ -863,7 +938,7 @@ def measure_spectral_features(spectra: Iterable[dict]) -> tuple[pd.DataFrame, pd
         for line_key in default_lines_for_type(spec["type"]):
             if line_key not in LINE_LIBRARY:
                 continue
-            line_rows.append({**base, **measure_absorption_line(wave_rest, spec["flux"], line_key)})
+            line_rows.append({**base, **measure_absorption_line(wave_rest, spec["flux"], line_key, include_systematics=True)})
 
     line_df = pd.DataFrame(line_rows)
     bb_df = pd.DataFrame(bb_rows)
@@ -968,29 +1043,38 @@ def measure_host_lines(spectra: Iterable[dict]) -> tuple[pd.DataFrame, pd.DataFr
             rows.append({**base, "status": status, "snr": snr, "flux_index": flux_index, "pEW_A": pew})
 
     line_df = pd.DataFrame(rows)
+    return line_df, summarize_host_line_indices(line_df)
+
+
+def summarize_host_line_indices(line_df: pd.DataFrame) -> pd.DataFrame:
     summary_rows = []
     if not line_df.empty:
         for target, group in line_df.groupby("target"):
             detections = group[group["status"].eq("detected")]
-            halpha = detections[detections["line"].eq("Halpha")]["flux_index"]
-            hbeta = detections[detections["line"].eq("Hbeta")]["flux_index"]
+            unique_lines = sorted(detections["line"].dropna().unique())
             ebv = np.nan
             balmer = np.nan
-            if not halpha.empty and not hbeta.empty and float(hbeta.iloc[0]) > 0:
-                balmer = float(halpha.iloc[0]) / float(hbeta.iloc[0])
-                if balmer > 2.86:
-                    ebv = 2.5 / (3.61 - 2.53) * math.log10(balmer / 2.86)
+            for _, same_file in detections.groupby("file"):
+                halpha = same_file[same_file["line"].eq("Halpha")]["flux_index"]
+                hbeta = same_file[same_file["line"].eq("Hbeta")]["flux_index"]
+                if not halpha.empty and not hbeta.empty and float(hbeta.iloc[0]) > 0:
+                    balmer = float(halpha.iloc[0]) / float(hbeta.iloc[0])
+                    if balmer > 2.86:
+                        ebv = 2.5 / (3.61 - 2.53) * math.log10(balmer / 2.86)
+                    break
             summary_rows.append(
                 {
                     "target": target,
                     "n_detected_host_lines": len(detections),
-                    "detected_lines": ", ".join(sorted(detections["line"].unique())),
+                    "n_detected_host_line_instances": len(detections),
+                    "unique_detected_host_lines": len(unique_lines),
+                    "detected_lines": ", ".join(unique_lines),
                     "balmer_decrement_Ha_Hb": balmer,
                     "rough_EBV_host_mag": ebv,
                     "host_note": "rough index from SN spectra; verify before physical use",
                 }
             )
-    return line_df, pd.DataFrame(summary_rows).sort_values("target").reset_index(drop=True)
+    return pd.DataFrame(summary_rows).sort_values("target").reset_index(drop=True) if summary_rows else pd.DataFrame()
 
 
 def build_target_status(summary: pd.DataFrame, line_qc: pd.DataFrame, host_summary: pd.DataFrame) -> pd.DataFrame:
@@ -1010,7 +1094,7 @@ def build_target_status(summary: pd.DataFrame, line_qc: pd.DataFrame, host_summa
         if "ia" in text:
             analysis = "Ia: compare Si II/Ca II velocity and pEW with BSNIP/CSP."
         elif "ii" in text:
-            analysis = "Type II: use Fe II/H velocities and pEW; compare with Gutiérrez/Tsinghua."
+            analysis = "Type II: use Fe II velocity scale; keep Balmer troughs as visual checks before literature comparison."
         elif "ib" in text or "ic" in text:
             analysis = "SE-SN: verify He/O/Ca lines; compare with Modjaz/Liu/Xiang."
         else:
@@ -1205,11 +1289,12 @@ def plot_target_status(target_status: pd.DataFrame, fig_dir: Path) -> Path | Non
 def plot_host_summary(host_summary: pd.DataFrame, fig_dir: Path) -> Path | None:
     if host_summary.empty:
         return None
-    counts = host_summary.set_index("target")["n_detected_host_lines"].sort_index()
+    count_col = "unique_detected_host_lines" if "unique_detected_host_lines" in host_summary.columns else "n_detected_host_lines"
+    counts = host_summary.set_index("target")[count_col].sort_index()
     plt.figure(figsize=(8, 4.5))
     plt.bar(counts.index, counts.values, color="#5b7c99")
     plt.title("Host/environment line detections")
-    plt.ylabel("Detected narrow-line indices")
+    plt.ylabel("Unique detected narrow-line indices" if count_col == "unique_detected_host_lines" else "Detected narrow-line indices")
     plt.xlabel("Target")
     plt.grid(axis="y", alpha=0.25)
     return _savefig(fig_dir / "host_line_detections.png")
@@ -1223,7 +1308,7 @@ def write_markdown_summary(target_status: pd.DataFrame, output_dir: Path) -> Pat
         "",
         "## Scientific scope",
         "",
-        "The literature review in `paper/sparse-multi-epoch-sn-spectra/` supports a sparse-spectra strategy: classify each SN, estimate phase, measure conservative velocities/pEW/FWHM, compare with public samples, and avoid over-interpreting progenitor physics from 1-3 spectra.",
+        "The literature review in `paper/sparse-multi-epoch-sn-spectra/` supports a sparse-spectra strategy: classify each SN, report discovery-date phase unless a reliable peak date is available, measure conservative velocities/pEW/FWHM, compare with public samples, and avoid over-interpreting progenitor physics from 1-3 spectra.",
         "",
         "## Target status",
         "",

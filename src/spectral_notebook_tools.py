@@ -426,7 +426,7 @@ def estimate_tardis_context(
         rise_default = {"Ia": 18.0, "II": 15.0, "Ibc": 15.0}.get(sn_family, 15.0)
         if not phases.empty:
             epoch_days = max(5.0, float(np.nanmedian(phases)) + rise_default)
-            epoch_source = f"median phase_days + {rise_default:g} d type default rise"
+            epoch_source = f"median discovery-date phase_days + {rise_default:g} d type default rise"
         else:
             epoch_days = rise_default
             epoch_source = "type default; set MANUAL_EPOCH_DAYS"
@@ -873,7 +873,11 @@ def rough_classify_spectra(spectra: list[dict]) -> tuple[pd.DataFrame, pd.DataFr
             velocity_line = str(best_line.iloc[0]["line"])
             velocity_kms = sp.parse_float(best_line.iloc[0].get("velocity_kms"))
 
-        bb = sp.fit_blackbody_temperature(spec["wave"] / (1.0 + z_used), spec["flux"])
+        bb = sp.apply_temperature_context_qc(
+            sp.fit_blackbody_temperature(spec["wave"] / (1.0 + z_used), spec["flux"]),
+            sn_type=rough_type,
+            z=z_used,
+        )
         spectrum_rows.append(
             {
                 "target": spec["target"],
@@ -1468,6 +1472,7 @@ def measure_absorption_line_tuned(
     line_smooth_window: int = 21,
     line_edge_fraction: float = 0.18,
     line_param_overrides: dict | None = None,
+    include_systematics: bool = True,
 ) -> tuple[dict, dict]:
     params = line_params_for(
         spec,
@@ -1492,7 +1497,6 @@ def measure_absorption_line_tuned(
             {"status": "outside wavelength range", "fit_method": "minimum_absorption"},
             pEW_A=np.nan,
         )
-        result["pEW_err_A"] = np.nan
         return result, {}
 
     wave = np.asarray(wave_rest[mask], dtype=float)
@@ -1507,7 +1511,6 @@ def measure_absorption_line_tuned(
             {"status": "bad local continuum", "fit_method": "minimum_absorption"},
             pEW_A=np.nan,
         )
-        result["pEW_err_A"] = np.nan
         return result, {}
 
     wave = wave[valid]
@@ -1533,8 +1536,27 @@ def measure_absorption_line_tuned(
         blue_only=line.get("blue_only", True),
         noise_proxy=raw_norm - norm,
     )
-    result = sp.format_absorption_line_result(line_key, line, fit, pEW_A=pew)
-    result["pEW_err_A"] = pew_err
+    result = sp.format_absorption_line_result(line_key, line, fit, pEW_A=pew, pEW_err_A=pew_err)
+    if include_systematics and result.get("status") == "ok":
+        variants = []
+        for variant_smooth, variant_edge in ((15, edge_fraction), (29, edge_fraction), (smooth_window, 0.12), (smooth_window, 0.24)):
+            if int(variant_smooth) == int(smooth_window) and float(variant_edge) == float(edge_fraction):
+                continue
+            variant, _ = measure_absorption_line_tuned(
+                spec,
+                line_key,
+                line_half_width=half_width,
+                line_smooth_window=int(variant_smooth),
+                line_edge_fraction=float(variant_edge),
+                line_param_overrides=None,
+                include_systematics=False,
+            )
+            if variant.get("status") == "ok":
+                variants.append(variant)
+        result["velocity_sys_kms"] = sp._systematic_spread(result.get("velocity_kms"), [row.get("velocity_kms") for row in variants])
+        result["pEW_sys_A"] = sp._systematic_spread(result.get("pEW_A"), [row.get("pEW_A") for row in variants])
+        result["FWHM_sys_A"] = sp._systematic_spread(result.get("FWHM_A"), [row.get("FWHM_A") for row in variants])
+        result["n_systematic_variants"] = len(variants)
     profile = {
         "wave": wave,
         "raw_flux": raw_flux,
@@ -1850,7 +1872,8 @@ def measure_all_features(
             "type": spec["type"],
             "z": spec["z"],
         }
-        bb_rows.append({**base, **sp.fit_blackbody_temperature(wave_rest, spec["flux"], bb_wave_range)})
+        bb = sp.fit_blackbody_temperature(wave_rest, spec["flux"], bb_wave_range)
+        bb_rows.append({**base, **sp.apply_temperature_context_qc(bb, sn_type=spec["type"], z=spec["z"])})
         for line_key in line_keys_for(spec, target_lines):
             if line_key not in sp.LINE_LIBRARY:
                 print(f"Skip unknown line {line_key}")

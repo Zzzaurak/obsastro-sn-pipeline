@@ -31,13 +31,15 @@ python scripts/build_presentation_figures.py
 - Top-level notebooks are edited directly; treat `notebooks/02_spectral_analysis_pipeline.ipynb` as the canonical source for the spectral-analysis workflow and keep README/notebook README text in sync when you change it.
 - In `notebooks/02_spectral_analysis_pipeline.ipynb`, keep the single-line local-check output concise. Show the candidate-line table, the selected `CHECK_LINE_INDEX` when `CHECK_LINE_KEY=None`, and the preview-only overrides (`CHECK_HALF_WIDTH`, `CHECK_SMOOTH_WINDOW`, `CHECK_EDGE_FRACTION`). Do not reintroduce a separate redshift-check section unless the user explicitly asks.
 - Absorption-line measurements use the smoothed, locally normalized trough minimum for `abs_wave`/velocity/depth, and a non-parametric half-depth width for FWHM. Do not reintroduce a Gaussian absorption fit or purple model curve unless the user explicitly asks for a comparison-only diagnostic.
+- Current TNS public catalog fields do not include maximum-light or peak-date metadata. Keep `phase_days` defined as days since TNS discovery date. Do not add or reinterpret maximum-light phase columns unless reliable peak dates/light-curve constraints are explicitly added later; Superfit phase output is not reliable enough for this project.
+- Conservative line adoption policy: Ia automatically adopts only `SiII6355` and Ca II blend proxies after QC; keep `SiII5972` as visual/check context. Type II/IIb automatically adopts `FeII5169` after QC; keep Balmer trough velocities as visual/check context unless manually validated. Ca II H&K and Ca II NIR are blend-proxy measurements, so keep `rest_wave_choice` and `line_blend_note` columns when editing exports.
 
 ## Module Map
 
 | File | Role | Entry Points |
 |------|------|-------------|
 | `src/pipeline.py` | **Core orchestrator**: config loading, TNS data acquisition (catalog + page scraping), observability calculation, finder chart download, report generation | `run_pipeline(config_path)` |
-| `src/spectral_pipeline.py` | **Current main science pipeline**: reads calibrated 1-D FITS spectra, rest-frame correction, minimum-trough line velocities/depths, pEW/non-parametric FWHM, blackbody color temperature, host-line indices, QC flags, CSV/figure generation | `build_all(project_root, output_dir)` |
+| `src/spectral_pipeline.py` | **Current main science pipeline**: reads calibrated 1-D FITS spectra, rest-frame correction, discovery-date phase, minimum-trough line velocities/depths, pEW/non-parametric FWHM, line systematics columns, blackbody color-temperature proxy QC, host-line indices, CSV/figure generation | `build_all(project_root, output_dir)` |
 | `src/finder.py` | **Finder chart generator**: astroquery SkyView query + matplotlib WCS plot with crosshair, scale bar | `generate_finder_chart()` |
 | `scripts/fetch_target_params.py` | **CLI wrapper**: invokes `python -m src.pipeline` from project root | `main()` |
 | `src/fetch_aux_data.py` | **Aux data orchestrator**: Lasair light curve + WISeREP spectra acquisition | `run(config_path)` |
@@ -56,8 +58,8 @@ python scripts/build_presentation_figures.py
 | `scripts/download_tardis_atom_data.py` | **TARDIS atomic data downloader**: downloads `kurucz_cd23_chianti_H_He_latest.h5` into `data/`, updates `~/.astropy/config/tardis_internal_config.yml` to point to project `data/` | `download_atom_data()` |
 | `src/tardis_model_resources.py` | **TARDIS model-resource manager**: copies package example CSVY/density/abundance resources into `data/tardis_models/` and writes an index for reproducibility | `download_resources()` |
 | `scripts/download_tardis_model_resources.py` | **TARDIS model-resource CLI**: dry-run or materialize model resources configured by `configs/tardis/model_resources.yml` | `main()` |
-| `src/tardis_tuning.py` | **TARDIS tuning helpers**: observed-spectrum loading, target seeds, analytic/CSVY candidate generation, config writing, scoring, and adoption helpers | `generate_candidates()`, `build_tardis_config()`, `score_model()` |
-| `scripts/run_tardis_tuning.py` | **TARDIS tuning CLI**: runs per-target candidate grids, writes comparison figures/scores, optionally adopts a checked best model | `main()` |
+| `src/tardis_tuning.py` | **TARDIS tuning helpers**: observed-spectrum loading, target seeds, analytic/CSVY candidate generation, plasma physics presets, config writing, scoring, and adoption helpers | `generate_candidates()`, `build_tardis_config()`, `score_model()` |
+| `scripts/run_tardis_tuning.py` | **TARDIS tuning CLI**: runs per-target candidate grids, writes comparison figures/scores, optionally adopts a checked best model; supports `--physics-preset current|literature|both` for analytic candidates | `main()` |
 
 ## Configuration
 
@@ -194,7 +196,7 @@ These CSVY resources are useful for qualitative experiments and format coverage,
 - **TARDIS per-target config**: `output/{target}/tardis/tardis_config_{target}.yml` — copy of the YAML config used for reproducibility
 - **TARDIS tuning experiments**: `output/tardis_tuning/{TARGET}/` for baseline tuning and `output/tardis_tuning/{TARGET}__{RUN_LABEL}/` for labeled experiments; contains `scores.csv`, candidate configs/spectra, and comparison PNGs
 - **TARDIS report assets**: `report/assets/tardis/` — local copies of adopted configs/spectra/figures plus selected experiment scores/figures for the Markdown report
-- **Analysis pipeline tables**: `output/analysis_pipeline/*.csv` — target status, spectra summary, line diagnostics with QC flags, blackbody color temperature, host-environment line indices. `scripts/build_analysis_products.py` writes unprefixed batch names; `notebooks/02_spectral_analysis_pipeline.ipynb` writes `<RUN_TAG>_*.csv` when saving interactively.
+- **Analysis pipeline tables**: `output/analysis_pipeline/*.csv` — target status, spectra summary, line diagnostics with QC flags/systematics/blend-proxy notes, blackbody color-temperature proxy QC, host-environment line indices with both instance and unique-line counts. `scripts/build_analysis_products.py` writes unprefixed batch names; `notebooks/02_spectral_analysis_pipeline.ipynb` writes `<RUN_TAG>_*.csv` when saving interactively.
 - **Analysis pipeline figures**: `output/analysis_pipeline/figures/*.png` — target table, spectral sequences, velocity evolution, pEW evolution, color-temperature proxy, host-line detections. Interactive 02 outputs use target tags for shared summary figures.
 - **Presentation figures**: `ppt/figures/*.png` — slide-ready copies/composites generated from analysis outputs
 
@@ -262,7 +264,7 @@ The current top-level TARDIS entry point is `notebooks/03_tardis_modeling_option
 
 1. **Load observed spectrum** — reads local one-dimensional FITS spectra from `data/SN*/`, not legacy `.dat` files.
 2. **Estimate target parameters from 02 products** — notebook uses the current 02 products (`target_status`, `spectra_summary`, `line_diagnostics_qc`) when available; if a legacy `manual_redshift_summary` still exists, treat it only as a fallback. Manual overrides remain available for redshift, type, velocity, epoch, apparent magnitude, and log luminosity.
-   - `epoch_days` starts from manual override, otherwise median `phase_days` plus a type-dependent rise-time default.
+   - `epoch_days` starts from manual override, otherwise median discovery-date `phase_days` plus a type-dependent rise-time default. This is not a measured maximum-light phase.
    - `luminosity_requested` starts from manual log(Lsun), or apparent magnitude + Planck18 luminosity distance, or a conservative type default.
    - `velocity start/stop` starts from adopted/check line velocity; for Ia, the photospheric proxy uses ~0.7×line velocity.
 3. **Build YAML config** — loads `configs/tardis/base_Ia.yml` template, overrides supernova/model/velocity params, adjusts rough abundances for non-Ia families, applies `configs/acceleration.json` TARDIS YAML overrides, writes to `configs/tardis/{TARGET}.yml`
@@ -276,6 +278,7 @@ Useful tuning flags:
 - `--run-label LABEL` keeps exploratory output under `output/tardis_tuning/{TARGET}__{LABEL}/` instead of overwriting the baseline tuning directory.
 - `--include-model-resources` adds Ia CSVY model-resource candidates to the analytic grid.
 - `--model-resource-only` runs only CSVY model-resource candidates.
+- `--physics-preset current|literature|both` controls analytic candidate plasma assumptions. `current` is the existing LTE baseline; `literature` uses `nebular` ionization, `dilute-lte` excitation, `dilute-blackbody` radiative rates, and `macroatom` line interaction; `both` compares both. CSVY model-resource candidates keep their resource-driven plasma override.
 - `--adopt-best` copies the best-scoring candidate into `configs/tardis/` and `output/{target}/tardis/`; use it only after inspecting `scores.csv` and comparison PNGs.
 
 **Notebook metadata:** use the `tardis` environment/kernel for TARDIS cells. Keep `RUN_TARDIS=False` while checking configuration; set it to `True` only when the TARDIS environment and atom data are ready.
@@ -352,7 +355,7 @@ Legacy notebooks in `notebooks/legacy/` include earlier DASH, Superfit, spectral
 
 ## Current Analysis Status
 
-- Completed first-pass automation: multi-epoch spectral sequences, type-aware minimum-trough line velocity measurements, pEW/non-parametric FWHM/depth, blackbody color-temperature proxy, host-line indices, target-level summary, and report-ready figures.
+- Completed first-pass automation: multi-epoch spectral sequences, type-aware minimum-trough line velocity measurements, pEW/non-parametric FWHM/depth, empirical line-systematics columns, blackbody color-temperature proxy with context QC, host-line indices with instance/unique counts, target-level summary, and report-ready figures.
 - Still partial: TARDIS modeling is qualitative only and not an automatic physical fitter, but the top-level 03 workflow is now self-contained from current project data/products.
 - Still partial: host extinction/environment diagnostics are rough line-index outputs, not fully flux-calibrated environmental measurements.
 - Still required before final science claims: inspect `line_diagnostics_qc.csv` or `<RUN_TAG>_line_diagnostics_qc.csv`, especially `qc_flag=check`, and maintain a final adopted-measurements table for values used in reports/slides.
@@ -380,6 +383,7 @@ python scripts/build_analysis_products.py
 - Rely on TNS Get Object API without bot credentials
 - Hardcode site coordinates in pipeline code (use config)
 - Use TARDIS v1 API (`sim.model`, `sim.transport.spectrum`, `spectrum.flux`) — this project uses TARDIS v2 dev (see API notes above)
+- Reinterpret `phase_days` as maximum-light phase without adding reliable peak-date/light-curve metadata first.
 - Store atomic data outside project `data/` directory — TARDIS internal config must point to project data
 - Use relative paths for `atom_data` in TARDIS YAML — prefer absolute path resolved from project root
 - Overwrite baseline TARDIS tuning runs for exploratory experiments; use `--run-label` unless intentionally replacing the baseline.
