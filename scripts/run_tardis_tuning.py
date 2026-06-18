@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import json
 import math
 import sys
 import traceback
@@ -64,6 +66,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="analytic-candidate plasma preset: current LTE baseline, literature photospheric preset, or both",
     )
     parser.add_argument(
+        "--seed-source",
+        choices=["context", "adopted"],
+        default="context",
+        help="start from automatically estimated context or the current adopted TARDIS summary",
+    )
+    parser.add_argument(
+        "--density-profiles",
+        default="",
+        help="comma-separated density profiles for analytic candidates; blank uses family/adopted defaults",
+    )
+    parser.add_argument(
+        "--abundance-presets",
+        default="",
+        help="comma-separated abundance presets for analytic candidates; blank uses family/adopted defaults",
+    )
+    parser.add_argument(
         "--luminosity-offsets",
         type=parse_float_list,
         default=[0.0, -0.35, 0.35],
@@ -87,6 +105,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def safe_label(value: str) -> str:
     text = str(value or "").strip()
     return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in text).strip("_")
+
+
+def parse_optional_list(value: str | None) -> list[str] | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in {"none", "default", "auto"}:
+        return None
+    items = [item.strip() for item in text.split(",") if item.strip()]
+    return items or None
 
 
 def tuning_target_dir(project_root: Path, target: str, run_label: str = "") -> Path:
@@ -138,6 +166,49 @@ def seed_from_context(context: dict[str, object]) -> tt.TargetSeed:
         v_start_kms=float(context.get("v_start_kms", np.nan)),
         v_stop_kms=float(context.get("v_stop_kms", np.nan)),
     )
+
+
+def load_adopted_summary_row(project_root: Path, target: str) -> dict[str, object] | None:
+    target = tt.canonical_target(target)
+    summary_csv = project_root / "report" / "assets" / "tardis" / "data" / "tardis_best_summary.csv"
+    if summary_csv.exists():
+        with summary_csv.open(newline="", encoding="utf-8") as handle:
+            for row in csv.DictReader(handle):
+                if tt.canonical_target(row.get("target")) == target:
+                    return dict(row)
+    summary_json = project_root / "output" / "tardis_tuning" / target / "best_summary.json"
+    if summary_json.exists():
+        return json.loads(summary_json.read_text(encoding="utf-8"))
+    return None
+
+
+def seed_and_filters_from_source(
+    project_root: Path,
+    context: dict[str, object],
+    seed_source: str,
+) -> tuple[tt.TargetSeed, list[str] | None, list[str] | None]:
+    seed = seed_from_context(context)
+    if seed_source == "context":
+        return seed, None, None
+    if seed_source != "adopted":
+        raise ValueError(f"unsupported seed source: {seed_source}")
+    row = load_adopted_summary_row(project_root, seed.target)
+    if row is None:
+        raise FileNotFoundError(f"no adopted TARDIS summary row found for {seed.target}")
+    density = str(row.get("density_profile", "")).strip()
+    abundance = str(row.get("abundance_preset", "")).strip()
+    adopted = tt.TargetSeed(
+        target=seed.target,
+        sn_type=seed.sn_type,
+        sn_family=seed.sn_family,
+        z=seed.z,
+        spectrum_file=seed.spectrum_file,
+        log_lsun=float(row.get("log_lsun", seed.log_lsun)),
+        time_explosion_days=float(row.get("time_explosion_days", seed.time_explosion_days)),
+        v_start_kms=float(row.get("v_start_kms", seed.v_start_kms)),
+        v_stop_kms=float(row.get("v_stop_kms", seed.v_stop_kms)),
+    )
+    return adopted, [density] if density else None, [abundance] if abundance else None
 
 
 def observed_rest_spectrum(context: dict[str, object]) -> tuple[np.ndarray, np.ndarray]:
@@ -273,12 +344,17 @@ def run_target(
     epoch_offsets: list[float],
     velocity_scales: list[float],
     physics_presets: list[str],
+    seed_source: str,
+    density_profiles: list[str] | None,
+    abundance_presets: list[str] | None,
     include_model_resources: bool,
     model_resource_only: bool,
     run_label: str,
 ) -> dict[str, object]:
     context = snt.estimate_tardis_context(project_root, target, spectrum_index=spectrum_index)
-    seed = seed_from_context(context)
+    seed, adopted_density_profiles, adopted_abundance_presets = seed_and_filters_from_source(project_root, context, seed_source)
+    density_profiles = density_profiles or adopted_density_profiles
+    abundance_presets = abundance_presets or adopted_abundance_presets
     obs_wave, obs_flux = observed_rest_spectrum(context)
     line_windows = tt.line_windows_for_family(seed.sn_family)
     target_dir = tuning_target_dir(project_root, seed.target, run_label)
@@ -292,8 +368,8 @@ def run_target(
         luminosity_offsets=luminosity_offsets,
         epoch_offsets=epoch_offsets,
         velocity_scales=velocity_scales,
-        abundance_presets=[] if model_resource_only else None,
-        density_profiles=[] if model_resource_only else None,
+        abundance_presets=[] if model_resource_only else abundance_presets,
+        density_profiles=[] if model_resource_only else density_profiles,
         physics_presets=[] if model_resource_only else physics_presets,
         model_resources=model_resources,
         max_candidates=max_candidates,
@@ -307,6 +383,10 @@ def run_target(
     )
     if not model_resource_only:
         print(f"[{seed.target}] physics presets: {', '.join(physics_presets)}")
+        if density_profiles:
+            print(f"[{seed.target}] density profiles: {', '.join(density_profiles)}")
+        if abundance_presets:
+            print(f"[{seed.target}] abundance presets: {', '.join(abundance_presets)}")
     if model_resources:
         print(f"[{seed.target}] model resources: {', '.join(model_resources)}")
     for candidate in candidates:
@@ -402,6 +482,8 @@ def main(argv: list[str] | None = None) -> int:
     nthreads = resolve_tardis_threads(acceleration.get("tardis", {}).get("nthreads", "auto"))
     targets = [tt.canonical_target(target) for target in args.target] if args.target else list(tt.DEFAULT_TARGETS)
     physics_presets = physics_presets_from_arg(args.physics_preset)
+    density_profiles = parse_optional_list(args.density_profiles)
+    abundance_presets = parse_optional_list(args.abundance_presets)
     summaries = []
     for target in targets:
         summaries.append(
@@ -418,6 +500,9 @@ def main(argv: list[str] | None = None) -> int:
                 epoch_offsets=args.epoch_offsets,
                 velocity_scales=args.velocity_scales,
                 physics_presets=physics_presets,
+                seed_source=args.seed_source,
+                density_profiles=density_profiles,
+                abundance_presets=abundance_presets,
                 include_model_resources=args.include_model_resources,
                 model_resource_only=args.model_resource_only,
                 run_label=args.run_label,

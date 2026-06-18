@@ -59,7 +59,7 @@ python scripts/build_presentation_figures.py
 | `src/tardis_model_resources.py` | **TARDIS model-resource manager**: copies package example CSVY/density/abundance resources into `data/tardis_models/` and writes an index for reproducibility | `download_resources()` |
 | `scripts/download_tardis_model_resources.py` | **TARDIS model-resource CLI**: dry-run or materialize model resources configured by `configs/tardis/model_resources.yml` | `main()` |
 | `src/tardis_tuning.py` | **TARDIS tuning helpers**: observed-spectrum loading, target seeds, analytic/CSVY candidate generation, plasma physics presets, config writing, scoring, and adoption helpers | `generate_candidates()`, `build_tardis_config()`, `score_model()` |
-| `scripts/run_tardis_tuning.py` | **TARDIS tuning CLI**: runs per-target candidate grids, writes comparison figures/scores, optionally adopts a checked best model; supports `--physics-preset current|literature|both` for analytic candidates | `main()` |
+| `scripts/run_tardis_tuning.py` | **TARDIS tuning CLI**: runs per-target candidate grids, writes comparison figures/scores, optionally adopts a checked best model; supports adopted-seed focused searches, analytic density/abundance filters, and `--physics-preset current|literature|both` for analytic candidates | `main()` |
 
 ## Configuration
 
@@ -276,6 +276,8 @@ The current top-level TARDIS entry point is `notebooks/03_tardis_modeling_option
 
 Useful tuning flags:
 - `--run-label LABEL` keeps exploratory output under `output/tardis_tuning/{TARGET}__{LABEL}/` instead of overwriting the baseline tuning directory.
+- `--seed-source context|adopted` controls whether the seed comes from current analysis products or from `report/assets/tardis/data/tardis_best_summary.csv`. Use `adopted` for local refinement around a checked model.
+- `--density-profiles` and `--abundance-presets` accept comma-separated analytic filters. When `--seed-source adopted` is used and these are blank, the adopted density and abundance are locked automatically.
 - `--include-model-resources` adds Ia CSVY model-resource candidates to the analytic grid.
 - `--model-resource-only` runs only CSVY model-resource candidates.
 - `--physics-preset current|literature|both` controls analytic candidate plasma assumptions. `current` is the existing LTE baseline; `literature` uses `nebular` ionization, `dilute-lte` excitation, `dilute-blackbody` radiative rates, and `macroatom` line interaction; `both` compares both. CSVY model-resource candidates keep their resource-driven plasma override.
@@ -338,7 +340,7 @@ In the current environment, import `Configuration` as `from tardis.io.configurat
 - Target name normalization: strips `SN`/`AT` prefix, removes spaces for TNS lookup
 - Config key flattening: nested dict sections (`observing`, `tns`, `output`) are flattened into a single dict; keys are `lower_snake_case`
 - Long CSVY TARDIS tuning grids can accumulate memory and exit with code 137. Prefer small labeled batches, then validate one or two promising candidates with `--packet-scale final`.
-- Current second-pass TARDIS check found no final adopted improvement from package CSVY resources. Keep the adopted model table in `report/tardis_report.md` as the source of truth unless a final-packet validation improves both score and visual line agreement.
+- Current package CSVY resources did not improve final adopted Ia fits. Focused adopted-seed refinement improved only SN2026KIE after final-packet validation (score 1.351 → 1.287); SN2026JLM and SN2026KID quick improvements did not survive final reruns. Keep the adopted model table in `report/tardis_report.md` as the source of truth unless a final-packet validation improves both score and visual line agreement.
 
 ## Notebooks
 

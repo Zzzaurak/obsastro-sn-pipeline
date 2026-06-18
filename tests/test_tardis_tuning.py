@@ -11,6 +11,49 @@ from src import tardis_tuning as tt
 
 
 class TardisTuningTests(unittest.TestCase):
+    def test_parse_optional_list_accepts_blank_and_csv_values(self) -> None:
+        self.assertIsNone(runner.parse_optional_list(""))
+        self.assertIsNone(runner.parse_optional_list("none"))
+        self.assertIsNone(runner.parse_optional_list("default"))
+        self.assertEqual(runner.parse_optional_list("branch85_w7, exponential"), ["branch85_w7", "exponential"])
+
+    def test_seed_from_adopted_summary_overrides_context_parameters(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            summary_dir = root / "report" / "assets" / "tardis" / "data"
+            summary_dir.mkdir(parents=True)
+            (summary_dir / "tardis_best_summary.csv").write_text(
+                "target,spectrum_file,candidate_id,total_score,log_lsun,time_explosion_days,"
+                "v_start_kms,v_stop_kms,density_profile,abundance_preset\n"
+                "SN2026KID,data/SN2026kid/spec.fits,SN2026KID_c002,1.1,8.8,24.9713,"
+                "5763.8347,12488.3084,exponential,ii_h_rich\n",
+                encoding="utf-8",
+            )
+            context = {
+                "target": "SN2026KID",
+                "sn_type": "SN II",
+                "sn_family": "II",
+                "z": 0.0017,
+                "log_lsun": 9.9,
+                "v_start_kms": 1000.0,
+                "v_stop_kms": 2000.0,
+                "spectrum": {
+                    "file": "data/SN2026kid/spec.fits",
+                    "wave": np.array([1.0]),
+                    "flux": np.array([1.0]),
+                    "phase_days": 4.0,
+                },
+            }
+
+            seed, density_presets, abundance_presets = runner.seed_and_filters_from_source(root, context, "adopted")
+
+        self.assertEqual(seed.log_lsun, 8.8)
+        self.assertAlmostEqual(seed.time_explosion_days, 24.9713)
+        self.assertEqual(seed.v_start_kms, 5763.8347)
+        self.assertEqual(seed.v_stop_kms, 12488.3084)
+        self.assertEqual(density_presets, ["exponential"])
+        self.assertEqual(abundance_presets, ["ii_h_rich"])
+
     def test_candidate_grid_applies_offsets_and_limits_count(self) -> None:
         base = tt.TargetSeed(
             target="SNTEST",

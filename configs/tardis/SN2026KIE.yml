@@ -3,27 +3,6 @@ supernova:
   luminosity_requested: 9.00 log_lsun
   time_explosion: 31.3 day
 atom_data: /home/zzzaurak/THU/astro/obsastro-sn-pipeline/data/kurucz_cd23_chianti_H_He_latest.h5
-model:
-  structure:
-    type: specific
-    velocity:
-      start: 7671.4 km/s
-      stop: 16621.3 km/s
-      num: 20
-    density:
-      type: power_law
-      time_0: 1 day
-      rho_0: 5e-10 g/cm^3
-      v_0: 10000 km/s
-      exponent: -7
-  abundances:
-    type: uniform
-    He: 0.62
-    O: 0.22
-    C: 0.1
-    Si: 0.035
-    S: 0.015
-    Ca: 0.01
 plasma:
   ionization: lte
   excitation: lte
@@ -50,3 +29,24 @@ spectrum:
   integrated:
     compute: Automatic
     points: 1000
+model:
+  structure:
+    type: specific
+    velocity:
+      start: 8054.9 km/s
+      stop: 17452.3 km/s
+      num: 20
+    density:
+      type: power_law
+      time_0: 1 day
+      rho_0: 5e-10 g/cm^3
+      v_0: 10000 km/s
+      exponent: -7
+  abundances:
+    type: uniform
+    He: 0.62
+    O: 0.22
+    C: 0.1
+    Si: 0.035
+    S: 0.015
+    Ca: 0.01

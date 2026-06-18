@@ -132,7 +132,7 @@ sn-pipline/
 | `build_presentation_figures.py` | 新增 | 从 `output/analysis_pipeline/figures/` 复制或重组 slides 需要的图，写到 `ppt/figures/`；读取目标状态时会兼容 `SN2026KID_target_status.csv` 这类逐目标调参产物。 |
 | `download_tardis_atom_data.py` | 原有 | 首次运行 TARDIS 前把 TARDIS 内部数据目录配置到当前项目 `data/`，并下载或复用 `kurucz_cd23_chianti_H_He_latest.h5`。 |
 | `download_tardis_model_resources.py` | 新增 | 把 `configs/tardis/model_resources.yml` 中声明的 TARDIS 包内置模型资源复制到 `data/tardis_models/`；当前主要是 Ia CSVY 分层密度/丰度示例和格式样例。 |
-| `run_tardis_tuning.py` | 新增 | 批量运行有限 TARDIS 参数搜索，输出 `output/tardis_tuning/<target>/` 或带 `--run-label` 的独立探索目录；支持 `--include-model-resources` / `--model-resource-only` 测试 CSVY resources，并可用 `--physics-preset current|literature|both` 比较当前 LTE baseline 和更接近文献 photospheric 假设的 `nebular/dilute-lte/macroatom` 组合。 |
+| `run_tardis_tuning.py` | 新增 | 批量运行有限 TARDIS 参数搜索，输出 `output/tardis_tuning/<target>/` 或带 `--run-label` 的独立探索目录；支持 `--seed-source adopted` 围绕已采用模型细调，支持 `--density-profiles` / `--abundance-presets` 锁定 analytic 候选，支持 `--include-model-resources` / `--model-resource-only` 测试 CSVY resources，并可用 `--physics-preset current|literature|both` 比较当前 LTE baseline 和更接近文献 photospheric 假设的 `nebular/dilute-lte/macroatom` 组合。 |
 
 ## `src/` 核心模块
 
@@ -226,11 +226,13 @@ python scripts/run_tardis_tuning.py --target SN2026KID --run-label analytic_refi
 
 - `--adopt-best`：把本轮最佳候选复制到 `configs/tardis/<TARGET>.yml` 和 `output/<TARGET>/tardis/`。
 - `--run-label <name>`：把探索性结果写到 `output/tardis_tuning/<TARGET>__<name>/`，避免覆盖原 adopted 搜索目录。
+- `--seed-source context|adopted`：默认从当前 02 产物估计 seed；`adopted` 会读取 `report/assets/tardis/data/tardis_best_summary.csv`，围绕当前采用模型做局部细调。
+- `--density-profiles <csv>` / `--abundance-presets <csv>`：手动限定 analytic 候选；留空时按类型默认，配合 `--seed-source adopted` 时默认锁定 adopted density/abundance。
 - `--include-model-resources`：把 `data/tardis_models/ia/*.csvy` 追加为 Ia 候选。
 - `--model-resource-only`：只跑 CSVY model-resource 候选。
 - `--physics-preset current|literature|both`：analytic 候选默认使用当前 LTE baseline；`literature` 会生成 `nebular + dilute-lte + macroatom` 的光球近似配置；`both` 同时比较两者。CSVY model-resource 候选保留资源文件自身的 plasma 设置。
 
-截至本次调参，Ia CSVY resources 可通过 `csvy_model` 写入合法的 TARDIS 候选配置并运行；CSVY 文件本身是模型资源，不是可单独执行的 run config。它们生成的 virtual/real packet 光谱噪声较大，SN2026FVX 与 SN2026JLM 的评分和目视效果均未优于原来的 W7-like analytic 模型。SN2026KID 的 quick refinement 曾得到较低分数，但 final packet profile 复跑没有保持优势，因此最终 adopted TARDIS 结果仍以 `report/tardis_report.md` 中的 adopted 表为准。
+截至本次调参，Ia CSVY resources 可通过 `csvy_model` 写入合法的 TARDIS 候选配置并运行；CSVY 文件本身是模型资源，不是可单独执行的 run config。它们生成的 virtual/real packet 光谱噪声较大，SN2026FVX 与 SN2026JLM 的评分和目视效果均未优于原来的 W7-like analytic 模型。围绕 adopted seed 的细网格检查中，SN2026JLM 和 SN2026KID 的 quick score 曾改善，但 final packet profile 复跑没有保持优势；SN2026KIE 的 final score 从 1.351 改善到 1.287，且目视没有明显退化，因此当前 adopted TARDIS 结果以 `report/tardis_report.md` 中的 adopted 表为准。
 
 ## 注意事项
 

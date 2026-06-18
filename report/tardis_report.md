@@ -182,9 +182,9 @@ sim.spectrum_solver.spectrum_integrated
 | SN2026FVX | SN2026FVX_c000 | 1.037 | 9.40 | 25.7 | 4374--13538 | branch85_w7 | ia_standard |
 | SN2026JLM | SN2026JLM_c001 | 1.753 | 9.40 | 32.5 | 5019--15534 | branch85_w7 | ia_si_rich |
 | SN2026KID | SN2026KID_c002 | 1.136 | 8.80 | 25.0 | 5764--12488 | exponential | ii_h_rich |
-| SN2026KIE | SN2026KIE_c002 | 1.351 | 9.00 | 31.3 | 7671--16621 | power_law | ib_he_rich |
+| SN2026KIE | SN2026KIE_c000 | 1.287 | 9.00 | 31.3 | 8055--17452 | power_law | ib_he_rich |
 
-从数值评分看，SN2026FVX、SN2026KID 和 SN2026KIE 的最终分数在约 1.0--1.4，SN2026JLM 的分数约 1.75。评分只用于同一套归一化和窗口下的模型筛选，不应跨不同超新星过度比较物理好坏。
+从数值评分看，SN2026FVX、SN2026KID 和 SN2026KIE 的最终分数在约 1.0--1.3，SN2026JLM 的分数约 1.75。评分只用于同一套归一化和窗口下的模型筛选，不应跨不同超新星过度比较物理好坏。
 
 ## 新增资源与二次调参检查
 
@@ -206,6 +206,31 @@ sim.spectrum_solver.spectrum_integrated
 - `assets/tardis/experiments/data/SN2026KIE_analytic_refine_scores.csv`
 
 这次二次调参的结论是：新下载的 Ia CSVY resources 对这两颗 Ia 目标没有带来更好的定性拟合；SN2026KID 的 quick refinement 虽然在 Halpha 区域看起来更接近，但高 packet/iteration 的 final 验证未保持优势，因此最终 adopted 表保持不变。
+
+## 文献 preset 与 adopted-seed 细网格检查
+
+在按文献修正光谱测量算法后，本轮又新增了 `--seed-source adopted`，直接围绕当前 adopted TARDIS 模型做小步细网格，而不是重新从 02 的自动 context seed 开始。局部搜索锁定当前 adopted 的 density/abundance，只扫描较小的 epoch 与 velocity perturbation，并用 `--physics-preset both` 同时比较当前 LTE baseline 和 `nebular + dilute-lte + macroatom` 文献型 photospheric plasma preset。
+
+quick 搜索使用较低 packet 数做初筛；只有 quick score 低于旧 adopted score 的候选才做 final-packet 复跑。结果如下：
+
+| target | focused quick best | quick score | final score | previous adopted score | decision |
+|---|---|---:|---:|---:|---|
+| SN2026FVX | SN2026FVX_c008 | 1.611 | -- | 1.037 | 不采用；局部搜索明显差于旧 W7-like 模型，literature preset 对 Ia 还出现不稳定极高分 |
+| SN2026JLM | SN2026JLM_c012 | 1.342 | 1.811 | 1.753 | 不采用；quick 明显改善，但 final-packet 复跑未保持优势 |
+| SN2026KID | SN2026KID_c012 | 1.032 | 1.263 | 1.136 | 不采用；quick 改善未通过 final 验证 |
+| SN2026KIE | SN2026KIE_c014 | 1.292 | 1.287 | 1.351 | 采用；final score 保持改善，目视检查未发现主要谱线窗口退化 |
+
+这轮检查说明，`literature_photospheric` plasma preset 不是普遍改进；四个目标的最佳 quick/final 候选仍来自 current LTE baseline。真正可采用的变化只有 SN2026KIE：将速度范围从 7671--16621 km/s 调整到 8055--17452 km/s 后，6200--6400 Angstrom 附近的过深吸收略减弱，Ca II NIR 区域残差也略小。该改进幅度不大，仍应作为定性模型，而不是精确物理反演。
+
+本轮 focused-search 评分表和检查图已复制到：
+
+- `assets/tardis/experiments/data/SN2026FVX_focused_lit_scores.csv`
+- `assets/tardis/experiments/data/SN2026JLM_focused_lit_scores.csv`
+- `assets/tardis/experiments/data/SN2026KID_focused_lit_scores.csv`
+- `assets/tardis/experiments/data/SN2026KIE_focused_lit_scores.csv`
+- `assets/tardis/experiments/data/SN2026JLM_focused_lit_final_scores.csv`
+- `assets/tardis/experiments/data/SN2026KID_focused_lit_final_scores.csv`
+- `assets/tardis/experiments/data/SN2026KIE_focused_lit_final_scores.csv`
 
 ## 分源模拟结果
 
@@ -254,12 +279,12 @@ SN2026KIE 采用 `power_law` 密度结构和 `ib_he_rich` 丰度 preset。最终
 
 - `log_lsun = 9.00`
 - `time_explosion = 31.3 day`
-- `v_start = 7671.4 km/s`
-- `v_stop = 16621.3 km/s`
+- `v_start = 8054.9 km/s`
+- `v_stop = 17452.3 km/s`
 
 ![SN2026KIE TARDIS comparison](assets/tardis/figures/tardis_comparison_SN2026KIE.png)
 
-该模型在 O I 7774 和 Ca II NIR 区域产生了对应吸收结构，但 Ca II NIR 明显偏深，约 6200--6400 Angstrom 附近也出现了比观测更强的吸收。由于 SN2026KIE 只有一条光谱，且 stripped-envelope SN 的谱线混合较复杂，本结果只能说明简化 Ibc 模型能部分复现 O/Ca 区域，不应把 `ib_he_rich` preset 直接解释为重新分类为 Ib。
+该模型在 O I 7774 和 Ca II NIR 区域产生了对应吸收结构。与上一版 adopted 模型相比，速度范围略向高速度移动后，约 6200--6400 Angstrom 附近的过深吸收稍有缓解，Ca II NIR 区域的残差略小，但 Ca II NIR 仍明显偏深。由于 SN2026KIE 只有一条光谱，且 stripped-envelope SN 的谱线混合较复杂，本结果只能说明简化 Ibc 模型能部分复现 O/Ca 区域，不应把 `ib_he_rich` preset 直接解释为重新分类为 Ib。
 
 ## 与数据处理结果的关系
 
@@ -284,6 +309,6 @@ SN2026KIE 采用 `power_law` 密度结构和 `ib_he_rich` 丰度 preset。最终
 
 ## 总结
 
-本次 TARDIS 批量模拟为四个目标提供了可复现的定性辐射输运对比图和最终 adopted YAML 配置。二次调参测试了新下载的 Ia CSVY model resources 和非 Ia analytic refinement，但没有产生通过 final 验证的更优 adopted 模型。SN2026KID 的 Type II Halpha 匹配仍是四个目标中最稳定的；SN2026FVX 的 Ia Si II 6355 匹配较好；SN2026JLM 和 SN2026KIE 只能作为定性支持，仍存在明显谱线强度或位置差异。
+本次 TARDIS 批量模拟为四个目标提供了可复现的定性辐射输运对比图和最终 adopted YAML 配置。二次调参测试了新下载的 Ia CSVY model resources、非 Ia analytic refinement，以及围绕 adopted seed 的文献 plasma preset 细网格。通过 final 验证并被采用的新增改进只有 SN2026KIE，score 从 1.351 降到 1.287；SN2026JLM 和 SN2026KID 的 quick 改善没有在 final-packet 复跑中保持。SN2026KID 的 Type II Halpha 匹配仍是四个目标中最稳定的；SN2026FVX 的 Ia Si II 6355 匹配较好；SN2026JLM 和 SN2026KIE 只能作为定性支持，仍存在明显谱线强度或位置差异。
 
 最终可用于报告展示的图像为 `assets/tardis/figures/tardis_comparison_*.png`。若后续要做更严格物理解释，应结合光变曲线约束、更多历元光谱、分层丰度模型和更系统的 TARDIS 参数搜索。
