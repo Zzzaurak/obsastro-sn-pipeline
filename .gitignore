@@ -47,3 +47,4 @@ P2Rp*
 ppt/*
 !ppt/*.tex
 docs/
+tests/

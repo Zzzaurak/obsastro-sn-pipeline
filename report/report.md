@@ -109,6 +109,10 @@ $$
 2. 删除不稳的氢线自动速度：SN2026KID 的 Halpha/Hbeta 局部最低点受发射峰、噪声和连续谱影响，不作为 adopted 速度。
 3. 缺红移目标不做定量采用：SN2026LMP 即使有候选线，也因为缺少 TNS 红移全部标为 `check`。
 
+本次按文献优化后的算法重跑后，`line_diagnostics_qc.csv` 共有 28 条候选测量，其中 18 条为 `adopt`、10 条为 `check`。我重新查看了目标级局部诊断图：自动最低点明显不可靠的窄谷已经由 QC 留在 `check`，包括 SN2026FVX 2026-03-26 的 Ca II H&K、SN2026JLM 2026-05-04 的 Ca II H&K，以及 SN2026LMP 的所有缺红移候选线。因此这轮没有再写入新的 `LINE_PARAM_OVERRIDES`；需要报告中特别降权的是若干浅线或系统敏感线，而不是通过改窗口就能稳健修好的错谷。
+
+具体来说，SN2026KID 的 Fe II 5169 三个 adopted 点线深较浅，SN2026KIE 的 Ca II NIR pEW 误差大于测量值，SN2026FVX/SN2026JLM 早期 Ca II H&K 的 pEW 也受连续谱选择影响较大。这些点仍可作为速度量级或 line ID 支持，但不适合对 pEW 或 FWHM 做强物理解释。若后续要得到更严格的最终表，可以在 QC 中加入 pEW 信噪比或 systematics 阈值，把这些弱 adopted 行降为 `check`；代价是 Ia 早期 Ca II 和 core-collapse 速度覆盖会更少。
+
 最终局部诊断图如下：
 
 ![SN2026FVX line diagnostics](assets/figures/SN2026FVX_line_diagnostics_grid.png)
