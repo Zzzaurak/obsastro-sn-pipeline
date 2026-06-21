@@ -1250,9 +1250,19 @@ def plot_blackbody(bb_df: pd.DataFrame, fig_dir: Path) -> Path | None:
     ok = bb_df[bb_df["status"].eq("ok")].copy() if not bb_df.empty else pd.DataFrame()
     if ok.empty:
         return None
+    ok["phase_days"] = pd.to_numeric(ok.get("phase_days", pd.Series(dtype=float)), errors="coerce")
+    phased = ok[ok["phase_days"].notna()].copy()
+    use_phase_axis = not phased.empty
+    plot_table = phased if use_phase_axis else ok
+    if not use_phase_axis:
+        plot_table["date_obs"] = pd.to_datetime(plot_table.get("date_obs", pd.Series(dtype=object)), errors="coerce")
+        plot_table = plot_table[plot_table["date_obs"].notna()].copy()
+    if plot_table.empty:
+        return None
     plt.figure(figsize=(9, 5))
-    for target, group in ok.groupby("target"):
-        x = group["phase_days"] if group["phase_days"].notna().any() else pd.to_datetime(group["date_obs"])
+    for target, group in plot_table.groupby("target"):
+        group = group.sort_values("phase_days" if use_phase_axis else "date_obs")
+        x = group["phase_days"] if use_phase_axis else group["date_obs"]
         _plot_with_optional_errorbar(
             plt.gca(),
             x,
@@ -1262,7 +1272,7 @@ def plot_blackbody(bb_df: pd.DataFrame, fig_dir: Path) -> Path | None:
             label=target,
         )
     plt.title("Continuum color-temperature estimate")
-    plt.xlabel("Days since discovery")
+    plt.xlabel("Days since discovery" if use_phase_axis else "Observation date")
     plt.ylabel("Blackbody temperature (K)")
     plt.grid(alpha=0.25)
     plt.legend(fontsize=8)

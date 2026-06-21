@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
+import tempfile
 import unittest
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
@@ -89,6 +92,57 @@ class SpectralPipelineLiteraturePolicyTests(unittest.TestCase):
         self.assertIn("continuum proxy", demoted["T_qc_note"])
         self.assertEqual(missing_z["T_qc_flag"], "check")
         self.assertIn("missing redshift", missing_z["T_qc_note"])
+
+    def test_blackbody_plot_uses_phase_axis_and_skips_missing_phase_rows(self) -> None:
+        bb_table = pd.DataFrame(
+            [
+                {
+                    "target": "PHASED",
+                    "date_obs": "2026-03-01 00:00:00",
+                    "phase_days": 1.0,
+                    "T_bb_K": 12000.0,
+                    "T_err_K": 500.0,
+                    "status": "ok",
+                },
+                {
+                    "target": "PHASED",
+                    "date_obs": "2026-03-05 00:00:00",
+                    "phase_days": 5.0,
+                    "T_bb_K": 9000.0,
+                    "T_err_K": 300.0,
+                    "status": "ok",
+                },
+                {
+                    "target": "MISSING_PHASE",
+                    "date_obs": "2026-03-05 00:00:00",
+                    "phase_days": np.nan,
+                    "T_bb_K": 20000.0,
+                    "T_err_K": 400.0,
+                    "status": "ok",
+                },
+            ]
+        )
+        captured: dict[str, object] = {}
+        original_savefig = sp._savefig
+
+        def capture_savefig(path: Path) -> Path:
+            ax = plt.gca()
+            captured["labels"] = ax.get_legend_handles_labels()[1]
+            captured["xlabel"] = ax.get_xlabel()
+            captured["xlim"] = ax.get_xlim()
+            plt.close()
+            return path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                sp._savefig = capture_savefig
+                sp.plot_blackbody(bb_table, Path(tmpdir))
+            finally:
+                sp._savefig = original_savefig
+
+        self.assertEqual(captured["labels"], ["PHASED"])
+        self.assertEqual(captured["xlabel"], "Days since discovery")
+        self.assertLess(captured["xlim"][1], 10.0)
 
     def test_host_summary_counts_instances_and_unique_lines_separately(self) -> None:
         host_lines = pd.DataFrame(
