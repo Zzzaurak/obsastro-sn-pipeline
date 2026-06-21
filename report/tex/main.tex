@@ -1,0 +1,165 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage[
+  backend=biber,
+  style=numeric,
+  sorting=none,
+  giveninits=true,
+  maxbibnames=3,
+  minbibnames=1,
+  maxcitenames=2,
+  doi=false,
+  url=false,
+  isbn=false,
+  eprint=false
+]{biblatex}
+
+\addbibresource{zzzaurak.bib}
+
+\hypersetup{hidelinks}
+
+\newcommand{\code}[1]{\texttt{#1}}
+
+\title{ObsAstro26 P2Rp2: Supernova Data Analysis Report}
+\author{Group 1}
+\date{June 3, 2026}
+
+\begin{document}
+\maketitle
+
+\section*{Contributions}
+\addcontentsline{toc}{section}{Contributions}
+\medskip
+\noindent\begin{tabular}{p{0.28\linewidth}p{0.20\linewidth}p{0.44\linewidth}}
+\toprule
+Task & Person & Contribution \\
+\midrule
+introduction,scientific background & Linlin & \dots \\
+
+target selection \& observation preparations & Minxuan He & \dots \\
+
+data reduction and analyses & Ziheng Zhang & Built and maintained the spectral-reduction workflow, manual redshift checks, type-aware line measurements, QC tables, and diagnostic plots. \\
+
+results and conclusion (\& summary) & Xinyu Liu & \dots \\
+
+\bottomrule
+\end{tabular}
+
+\tableofcontents
+\newpage
+
+\section{Scientific Question}
+
+\section{Data}
+
+\section{How Did We Reduce and Analyze the Data?}
+The reduction and analysis are implemented in \path{src/spectral_pipeline.py} and \path{src/spectral_notebook_tools.py}, with \path{notebooks/02_spectral_analysis_pipeline.ipynb} serving as the interactive interface. The same logic is also used by \path{scripts/build_analysis_products.py} so that the notebook and the batch outputs stay consistent. At the top level, we keep the workflow close to the sparse-spectrum comparison literature and use public comparison spectra from WISeREP as a reference context \cite{blondinDeterminingTypeRedshift2007,yaronWISeREPInteractiveSupernova2012}.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.93\linewidth]{images_zzzaurak/rough_classification_summary.png}
+\caption{Automatic local-spectrum classification context used to organize the sparse sample before detailed line measurement.}
+\label{fig:rough-classification}
+\end{figure}
+
+\subsection{Data Ingestion and Bookkeeping}
+The pipeline starts from the local one-dimensional FITS spectra in \path{data/SN*/}. For each spectrum, the code reads the wavelength and flux arrays, attaches the target metadata, and records the observation date, target type, and phase information when available. This bookkeeping step is important because the project is built around sparse spectra: each measurement has to remain traceable back to the exact file, epoch, and target that produced it.
+
+The analysis products are organized into a small set of CSV tables. The most important ones are \path{target_status.csv}, \path{line_diagnostics_qc.csv}, \path{blackbody_temperature.csv}, \path{host_environment_lines.csv}, and \path{host_environment_summary.csv}. Their companion figures are written into \path{output/analysis_pipeline/figures/}. This makes the workflow reproducible and keeps the final report tied to concrete output files rather than to notebook state alone.
+
+\subsection{Manual Redshift Checks with Host Narrow Lines}
+Before we measure broad supernova features, we check the redshift using a narrow host line in section 4 of \path{02_spectral_analysis_pipeline.ipynb}. This step is deliberately conservative. The code zooms into a local window around the candidate host line, smooths the spectrum for readability, normalizes it with a local continuum estimate, and overlays three guides: the automatic peak or valley picked by the code, the manual adopted center, and a local Gaussian fit curve.
+
+This follows the same general sparse-spectrum logic as SNID-style template matching and public-spectrum comparison work \cite{blondinDeterminingTypeRedshift2007,yaronWISeREPInteractiveSupernova2012}.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.97\linewidth]{images_zzzaurak/line_check_SN2026KID_SN2026kid_bfosc_20260427_Halpha.png}
+\caption{Representative manual redshift check for the host H$\alpha$ line in SN2026KID. The automatic pick, the adopted center, and the local Gaussian guide are shown together to keep the rest-frame decision transparent.}
+\label{fig:line-check-kid}
+\end{figure}
+
+The Gaussian fit in this redshift-check plot is only a visual aid. It helps locate the center of the narrow host feature, but it does not silently replace the manual decision. The automatic estimate remains available as \code{z\_preview}, while the adopted value comes from the manually chosen observed wavelength, usually entered through \code{MANUAL\_OBSERVED\_WAVE}. The TNS redshift, when available, is printed only as an external reference.
+
+This division of labor matters because the host-line check and the transient line measurements serve different purposes. The host-line check is about anchoring the rest frame. The supernova line measurements described below are about extracting broad physical diagnostics once the rest frame is fixed.
+
+\subsection{Type-Aware Spectral Line Measurements}
+After the rest frame is established, the pipeline measures a type-aware list of spectral features. Different supernova families use different line sets. For example, thermonuclear spectra are tracked with lines such as Si II and Ca II, hydrogen-rich core-collapse spectra are tracked with Balmer and Fe II features, and stripped-envelope candidates are checked with He I, O I, and Ca II where appropriate. The point is not to force a single universal line list on every target, but to match the measurement to the physical class that the spectrum actually suggests.
+
+For Type Ia objects, the reported velocities and pEW/FWHM values are meant to be compared with BSNIP and CSP-style measurements \cite{silvermanBerkeleySupernovaIa2012a,folatelliSPECTROSCOPYTYPEIa2013}. For Type II and stripped-envelope objects, the closest benchmarks are the Tsinghua Type II and stripped-envelope datasets, plus the corresponding subtype-comparison literature \cite{gutierrezTypeIISupernova2017,linSpectralDataRelease2024,modjazOPTICALSPECTRA732014,xiangSpectralDatasetStrippedenvelope2026}.
+
+For each selected absorption feature, the pipeline follows the same sequence:
+\begin{enumerate}[leftmargin=1.4em]
+    \item smooth the local spectrum with a Savitzky--Golay filter;
+    \item estimate a local linear continuum from the window edges;
+    \item divide the flux by that continuum to obtain a normalized line profile;
+    \item fit an absorption Gaussian on the normalized profile;
+    \item convert the fitted center into a velocity relative to the laboratory rest wavelength;
+    \item store the fitted depth, the Gaussian sigma, and the corresponding FWHM.
+\end{enumerate}
+
+For an absorption line, the local model is intentionally simple:
+\[
+f_{\mathrm{norm}}(\lambda)
+=b + s \, \frac{\lambda-\lambda_{\mathrm{rest}}}{w}
+-d \exp\!\left[-\frac{1}{2}\left(\frac{\lambda-\lambda_c}{\sigma}\right)^2\right],
+\]
+where \code{b} and \code{s} are the local baseline and slope terms, $\lambda_c$ is the fitted line center, $\sigma$ is the width parameter, and \code{d} is the line depth. The resulting full width at half maximum is computed from the fitted sigma as $\mathrm{FWHM} = 2.35482\,\sigma$. This is a good compromise for sparse spectra because it is stable enough to give repeatable centers and widths, while still allowing a small continuum tilt.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.97\linewidth]{images_zzzaurak/spectral_sequence_SN2026KID.png}
+\caption{Representative rest-frame spectral sequence for SN2026KID. This is the kind of multi-epoch behavior that the line-velocity and pEW tables are designed to summarize.}
+\label{fig:sequence-kid}
+\end{figure}
+
+The pseudo-equivalent width is \emph{not} taken from the Gaussian area. Instead, the pipeline integrates the positive absorption deficit directly:
+\[
+\mathrm{pEW}
+=\int \max\!\left(1 - f_{\mathrm{norm}}(\lambda),\,0\right)\,d\lambda.
+\]
+Keeping pEW as a direct integral is deliberate. It avoids letting a single Gaussian shape bias the result when the profile is asymmetric, blended, or slightly non-Gaussian. In other words, the Gaussian fit is used for the center, velocity, depth, and FWHM, while pEW remains a model-light measurement on the normalized spectrum itself.
+
+If a fit fails, or if the line is obviously too blended or too noisy to support a trustworthy fit, the pipeline does \emph{not} silently fall back to a peak-picking estimate. Instead, it records the measurement with a conservative quality flag so that the line can be reviewed manually.
+
+\subsection{Blackbody Color-Temperature Proxy}
+The pipeline also fits a simple blackbody-like continuum to the rest-frame spectrum and stores the result in \path{blackbody_temperature.csv}. This should be interpreted as a color-temperature proxy rather than as a fully physical photospheric temperature. The spectra are sparse, and the aim here is to track the broad continuum shape and its evolution rather than to claim a detailed atmosphere model. For SN2026KID specifically, the host galaxy is seen nearly edge-on, so strong blue-end host extinction makes the blackbody proxy especially unreliable and it should be treated only as a qualitative continuum guide.
+
+The continuum proxy is still useful because it gives a compact way to compare whether a target is becoming hotter or cooler across epochs, and whether the continuum shape is consistent with the broad supernova class inferred from the line measurements.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.97\linewidth]{images_zzzaurak/SN2026KID_blackbody_fit_grid.png}
+\caption{Continuum color-temperature proxy fits for SN2026KID. The orange curve is a simple blackbody-like approximation used only as a temperature proxy, not as a full atmosphere model.}
+\label{fig:blackbody-kid}
+\end{figure}
+
+\subsection{Host and Environment Diagnostics}
+In addition to the supernova features, the pipeline measures narrow host-environment lines when they are available in the local spectra. These measurements are saved in \path{host_environment_lines.csv} and summarized in \path{host_environment_summary.csv}. The goal is not yet a full nebular analysis of metallicity or star-formation rate. Instead, these indices are used as practical diagnostics for host contamination, local environment strength, and whether the spectrum contains enough narrow-line information to justify a more detailed follow-up.
+
+\subsection{Quality Control and Final Outputs}
+Every line measurement receives a conservative quality flag: \code{adopt}, \code{check}, or \code{reject}. An \code{adopt} measurement is a stable fit with the expected line identity and no obvious failure mode. A \code{check} measurement is usable but needs human inspection, usually because the profile is weak, blended, or only partially constrained. A \code{reject} measurement should not be quoted as a science result.
+
+This QC step is central to the pipeline. Sparse spectra are easy to over-interpret, so the code preserves the questionable cases rather than hiding them. The final report and the final presentation should rely on the adopted measurements, or on checked measurements that have been visually confirmed from the diagnostic plots.
+
+The pipeline writes both raw and cleaned products. The main shared outputs are the target-status table, the raw and QC line-diagnostic tables, the blackbody-temperature table, the host-line tables, and the corresponding figures. The interactive notebook can also write target-tagged CSVs and PNGs so that a single target can be re-run without overwriting other targets.
+
+\section{How Did We Model and Interpret the Data?}
+Interpretation is comparative rather than fully parametric. We use SNID-style template matching and WISeREP spectra to keep the class, redshift, and phase context consistent \cite{blondinDeterminingTypeRedshift2007,yaronWISeREPInteractiveSupernova2012}.
+
+For Type Ia objects, we compare the measured velocities, pEW values, and widths against BSNIP and CSP benchmark samples \cite{silvermanBerkeleySupernovaIa2012a,folatelliSPECTROSCOPYTYPEIa2013}. This is the correct level of ambition for sparse spectra: it supports class-level interpretation and sanity checks against known line evolution, but it is not dense enough to recover full explosion parameters.
+
+For Type II and stripped-envelope objects, we compare against the published Tsinghua and Modjaz/Xiang samples \cite{gutierrezTypeIISupernova2017,linSpectralDataRelease2024,modjazOPTICALSPECTRA732014,xiangSpectralDatasetStrippedenvelope2026}. In practice, this means checking whether the observed H, Fe, He, O, and Ca features land in a plausible part of the known subtype distribution and whether the phase evolution is consistent with the rough age estimate.
+
+\section{Conclusion}
+
+\printbibliography[title={References}]
+
+\end{document}
